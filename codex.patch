@@ -1,0 +1,1937 @@
+diff --git a/Build1.0.1RC/TermoSystem v1.0.1RC.ino b/Build1.0.1RC/TermoSystem v1.0.1RC.ino
+index 3017b35373c55a9c0573da39f37c931af1cff694..391ea44877bf5a48c71a639c6a31e21d709ddf5f 100644
+--- a/Build1.0.1RC/TermoSystem v1.0.1RC.ino	
++++ b/Build1.0.1RC/TermoSystem v1.0.1RC.ino	
+@@ -1,58 +1,60 @@
+ // =========================================================
+-//  TermoSystem - v1.0.1 RC
++//  TermoSystem - v1.1 Beta
+ //  BLOCCO 1: Config & Funzioni di base
+ // =========================================================
+ 
+ #include <Arduino.h>
+ #include <Wire.h>
+ #include <U8g2lib.h>
+ #include <ESP8266WiFi.h>
+ #include <ESP8266WebServer.h>
++#include <ESP8266httpUpdate.h>
+ #include <EEPROM.h>
+ #include <math.h>
+ #include <time.h>
++#include <WiFiClientSecure.h>
+ 
+ // ====== Prototipi funzioni usate prima di essere definite ======
+ void applyPumpState(bool on);
+ void updatePumpLogic();
+ void addHistorySample();
+ 
+ void handleRoot();
+ void handleWifiPage();
+ void handleSaveWifi();
+ void handleApiStatus();
+ void handleApiSettingsGet();
+ void handleApiSettingsPost();
+ void handleApiHistory();
+ void handleApp();
+ void setupWebServerRoutes();
+ 
+ // =============================
+ //  VERSIONE
+ // =============================
+-#define FW_VERSION "TermoSystem v1.0.1 RC"
++#define FW_VERSION "TermoSystem v1.1 Beta"
+ 
+ // =============================
+ //  PIN DEFINITIONS
+ // =============================
+ 
+ // I2C
+ #define SDA_PIN 14   // D5
+ #define SCL_PIN 12   // D6
+ 
+ // PULSANTI
+ const int PIN_BTN_UP     = 4;   // D2
+ const int PIN_BTN_DOWN   = 5;   // D1
+ const int PIN_BTN_SELECT = 13;  // D7 (OK)
+ 
+ // RELÈ
+ const int PIN_RELE_POMPA = 2;   // D4
+ const int PIN_RELE_AUX   = 16;  // D0 (AUX)
+ 
+ // NTC / ANALOG
+ const int PIN_NTC_P1_MAX = A0;  // per ora 1 sola NTC collegata qui
+ 
+ // =============================
+ //  DISPLAY PRINCIPALE GM12864
+ // =============================
+ U8G2_ST7567_ENH_DG128064I_F_HW_I2C mainDisp(
+@@ -84,117 +86,163 @@ const byte EEPROM_MAGIC_DISPLAY   = 0x99;
+ const byte EEPROM_MAGIC_PUMP      = 0x77;
+ const byte EEPROM_MAGIC_GLOBAL    = 0x55;
+ 
+ // WIFI
+ const int EEPROM_ADDR_WIFI_MAGIC  = 0;
+ const int EEPROM_ADDR_WIFI_SSID   = 1;   // 32 bytes
+ const int EEPROM_ADDR_WIFI_PASS   = 33;  // 64 bytes
+ 
+ // DISPLAY
+ const int EEPROM_ADDR_DISP_MAGIC  = 97;
+ const int EEPROM_ADDR_DISP_CONTR  = 98;
+ const int EEPROM_ADDR_DISP_FLIP   = 99;
+ 
+ // PUMP
+ const int EEPROM_ADDR_PUMP_MAGIC  = 120;
+ const int EEPROM_ADDR_PUMP_SET    = 121; // float (4 bytes) - temperatura di set (ON)
+                                          // (OFF = set - isteresi)
+ 
+ // GLOBAL SETTINGS (tema, orologio, AUX, sensori, etc.)
+ const int EEPROM_ADDR_GLOBAL_MAGIC     = 140;
+ const int EEPROM_ADDR_GLOBAL_THEME     = 141; // uint8_t
+ const int EEPROM_ADDR_GLOBAL_USE_NTP   = 142; // uint8_t (0/1)
+ const int EEPROM_ADDR_GLOBAL_IS_24H    = 143; // uint8_t (0/1)
+ const int EEPROM_ADDR_GLOBAL_TZ_INDEX  = 144; // uint8_t
+ const int EEPROM_ADDR_GLOBAL_AUX_STATE = 145; // uint8_t (0/1)
++const int EEPROM_ADDR_GLOBAL_LANG      = 146; // uint8_t (0=IT,1=EN,2=ZH)
+ const int EEPROM_ADDR_GLOBAL_SENSE_EN  = 150; // 4 bits per sonde attive
+ 
+ // =============================
+ //  MODALITÀ & UI
+ // =============================
+ 
+ bool diagMode = false;   // se OK premuto all'avvio
+ 
+ // Stati UI principali
+ enum UiState {
+   UI_DASHBOARD,
+   UI_MENU,
+   UI_STATUS,
+   UI_PUMP,
+   UI_DISPLAY_SETTINGS,
+   UI_TIME_SETTINGS,
+   UI_SYSTEM_SETTINGS,
+   UI_THEME_SELECT,
++  UI_LANGUAGE_SELECT,
++  UI_OTA_UPDATE,
++  UI_FACTORY_RESET,
+   UI_DIAG,
+   UI_INFO
+ };
+ 
+ UiState uiState = UI_DASHBOARD;
+ 
+ // =============================
+ //  TEMI DISPLAY
+ // =============================
+ 
+ enum ThemeId : uint8_t {
+   THEME_CLASSIC = 0,      // layout classico tecnico
+   THEME_TECHNO,           // stile più "tech"
+   THEME_DARKLINES,        // molto minimale a linee
+   THEME_WAVE,             // con "onde" / tubi più evidenti
+   THEME_CHRISTMAS,        // tema natalizio
+   THEME_COUNT
+ };
+ 
+ struct ThemeConfig {
+   const char* name;
+   // Qui potresti aggiungere in futuro parametri grafici specifici
+   // (ad es. se usare bordi doppi, tipo di icone, ecc.)
+ };
+ 
+ const ThemeConfig THEMES[THEME_COUNT] = {
+   { "Classic"     },
+   { "Techno"      },
+   { "Dark Lines"  },
+   { "Wave Flow"   },
+   { "Christmas"   }
+ };
+ 
+ ThemeId currentTheme = THEME_CLASSIC;
+ 
++// =============================
++//  LINGUE
++// =============================
++
++enum LanguageId : uint8_t {
++  LANG_IT = 0,
++  LANG_EN,
++  LANG_ZH,
++  LANG_COUNT
++};
++
++LanguageId currentLanguage = LANG_IT;
++
++const char* tr(const char* it, const char* en, const char* zh) {
++  switch (currentLanguage) {
++    case LANG_EN: return en;
++    case LANG_ZH: return zh;
++    case LANG_IT:
++    default:      return it;
++  }
++}
++
++const char* languageName(LanguageId lang) {
++  switch (lang) {
++    case LANG_IT: return "Italiano";
++    case LANG_EN: return "English";
++    case LANG_ZH: return "中文";
++    default:      return "??";
++  }
++}
++
+ // =============================
+ //  WIFI CONFIG
+ // =============================
+ 
+ struct WifiConfig {
+   char ssid[32];
+   char password[64];
+ };
+ 
+ WifiConfig wifiConf;
+ bool wifiConfigured = false;
+ bool wifiConnected  = false;
+ bool apMode         = false;
+ 
++// =============================
++//  OTA UPDATE
++// =============================
++
++// Imposta l'URL RAW del tuo repo GitHub al file OTA/LiveUpdate.bin
++const char* OTA_FIRMWARE_URL = "https://raw.githubusercontent.com/USER/REPO/main/OTA/LiveUpdate.bin";
++bool otaStartRequested = false;
++bool otaInProgress = false;
++int  otaProgress = -1;
++int  otaLastError = 0;
++
+ // =============================
+ //  PULSANTI (debounce)
+ // =============================
+ 
+ bool lastUpState     = HIGH;
+ bool lastDownState   = HIGH;
+ bool lastSelectState = HIGH;
+ unsigned long lastBtnTime = 0;
+ const unsigned long DEBOUNCE_MS   = 150;
+ const unsigned long LONG_PRESS_MS = 800;
+ 
+ bool upPressed     = false;
+ bool downPressed   = false;
+ bool selectPressed = false;
+ 
+ // =============================
+ //  RELÈ & POMPA LOGIC
+ // =============================
+ 
+ bool relayPumpActiveLow = true;  // se relè pilotato a logica invertita
+ bool relayAuxActiveLow  = true;
+ 
+ // Pompa: AUTO / FORZATA / SPENTA
+ enum PumpMode {
+   PUMP_AUTO,
+@@ -547,94 +595,107 @@ void loadPumpConfig() {
+ void savePumpConfig() {
+   EEPROM.write(EEPROM_ADDR_PUMP_MAGIC, EEPROM_MAGIC_PUMP);
+   union {
+     float f;
+     uint8_t b[4];
+   } u;
+   u.f = pumpSetTemp;
+   for (int i = 0; i < 4; i++) {
+     EEPROM.write(EEPROM_ADDR_PUMP_SET + i, u.b[i]);
+   }
+   EEPROM.commit();
+ }
+ 
+ // =============================
+ //  GLOBAL CONFIG (tema, orologio, AUX, sonde)
+ // =============================
+ 
+ void loadGlobalConfig() {
+   byte magic = EEPROM.read(EEPROM_ADDR_GLOBAL_MAGIC);
+   if (magic != EEPROM_MAGIC_GLOBAL) {
+     currentTheme   = THEME_CLASSIC;
+     clockUseNtp    = true;
+     clockIs24h     = true;
+     clockTzIndex   = 0;
+     auxRelayState  = false;
++    currentLanguage = LANG_IT;
+     for (int i = 0; i < SONDA_COUNT; i++) {
+       sonde[i].enabled = true;  // di default tutte attive
+     }
+     return;
+   }
+ 
+   uint8_t t = EEPROM.read(EEPROM_ADDR_GLOBAL_THEME);
+   if (t >= THEME_COUNT) t = THEME_CLASSIC;
+   currentTheme = (ThemeId)t;
+ 
+   uint8_t ntp  = EEPROM.read(EEPROM_ADDR_GLOBAL_USE_NTP);
+   uint8_t h24  = EEPROM.read(EEPROM_ADDR_GLOBAL_IS_24H);
+   uint8_t tz   = EEPROM.read(EEPROM_ADDR_GLOBAL_TZ_INDEX);
+   uint8_t aux  = EEPROM.read(EEPROM_ADDR_GLOBAL_AUX_STATE);
++  uint8_t lang = EEPROM.read(EEPROM_ADDR_GLOBAL_LANG);
+   uint8_t sen  = EEPROM.read(EEPROM_ADDR_GLOBAL_SENSE_EN);
+ 
+   clockUseNtp  = (ntp != 0);
+   clockIs24h   = (h24 != 0);
+   clockTzIndex = (tz >= TIMEZONES_COUNT) ? 0 : tz;
+   auxRelayState = (aux != 0);
++  if (lang >= LANG_COUNT) lang = LANG_IT;
++  currentLanguage = (LanguageId)lang;
+ 
+   for (int i = 0; i < SONDA_COUNT; i++) {
+     bool en = (sen & (1 << i)) != 0;
+     sonde[i].enabled = en;
+   }
+ }
+ 
+ void saveGlobalConfig() {
+   EEPROM.write(EEPROM_ADDR_GLOBAL_MAGIC, EEPROM_MAGIC_GLOBAL);
+   EEPROM.write(EEPROM_ADDR_GLOBAL_THEME,    (uint8_t)currentTheme);
+   EEPROM.write(EEPROM_ADDR_GLOBAL_USE_NTP,  clockUseNtp ? 1 : 0);
+   EEPROM.write(EEPROM_ADDR_GLOBAL_IS_24H,   clockIs24h  ? 1 : 0);
+   EEPROM.write(EEPROM_ADDR_GLOBAL_TZ_INDEX, clockTzIndex);
+   EEPROM.write(EEPROM_ADDR_GLOBAL_AUX_STATE, auxRelayState ? 1 : 0);
++  EEPROM.write(EEPROM_ADDR_GLOBAL_LANG,     (uint8_t)currentLanguage);
+ 
+   uint8_t sen = 0;
+   for (int i = 0; i < SONDA_COUNT; i++) {
+     if (sonde[i].enabled) sen |= (1 << i);
+   }
+   EEPROM.write(EEPROM_ADDR_GLOBAL_SENSE_EN, sen);
+ 
+   EEPROM.commit();
+ }
+ 
++void resetFactoryDefaults() {
++  EEPROM.write(EEPROM_ADDR_WIFI_MAGIC,    0x00);
++  EEPROM.write(EEPROM_ADDR_DISP_MAGIC,    0x00);
++  EEPROM.write(EEPROM_ADDR_PUMP_MAGIC,    0x00);
++  EEPROM.write(EEPROM_ADDR_GLOBAL_MAGIC,  0x00);
++  EEPROM.commit();
++}
++
+ // =============================
+ //  LETTURA NTC P1 MAX
+ // =============================
+ 
+ float readNtcTempOnA0() {
+   const float VCC     = 3.3;       // tensione logica
+   const float R_FIXED = 10000.0;   // 10k
+   const float BETA    = 3950.0;    // NTC tipica
+   const float T0      = 298.15;    // 25°C K
+   const float R0      = 10000.0;   // 10k @ 25°C
+ 
+   int adc = analogRead(PIN_NTC_P1_MAX); // 0..1023
+   float v = adc * (VCC / 1023.0);
+ 
+   if (v <= 0.01 || v >= (VCC - 0.01)) {
+     return NAN;
+   }
+ 
+   float r_ntc = (v * R_FIXED) / (VCC - v);
+ 
+   float invT = 1.0 / T0 + (1.0 / BETA) * log(r_ntc / R0);
+   float T = 1.0 / invT;
+   float Tc = T - 273.15;
+ 
+   return Tc;
+@@ -725,51 +786,51 @@ void updatePumpLogic() {
+         float t = sonde[SONDA_P1_MAX].tempC;
+ 
+         // ON:   quando la temp supera il setpoint
+         if (!pumpRelayState && t >= pumpSetTemp) {
+           applyPumpRelay(true);
+         }
+         // OFF: quando scende di 1.5°C sotto il setpoint
+         else if (pumpRelayState && t <= (pumpSetTemp - PUMP_HYST)) {
+           applyPumpRelay(false);
+         }
+         // altrimenti mantiene lo stato attuale (niente click)
+       }
+       break;
+     }
+ 
+     case PUMP_FORCE_ON:
+       applyPumpRelay(true);
+       break;
+ 
+     case PUMP_FORCE_OFF:
+       applyPumpRelay(false);
+       break;
+   }
+ }
+ // =========================================================
+-//  TermoSystem - v1.0.1 RC
++//  TermoSystem - v1.1 Beta
+ //  BLOCCO 2: setup() + startup stile Linux + animazione logo
+ // =========================================================
+ 
+ // Forward declarations di cose che arriveranno nei blocchi successivi
+ void setupWebServerRoutes();  // definita nel blocco WebApp
+ void drawOledDiag();          // versione runtime, definita più avanti
+ void drawOledVitals();        // versione runtime, definita più avanti
+ 
+ // =============================
+ //  HELPER: Aggiorna stato periferiche
+ // =============================
+ void updatePeripheralStatus() {
+   // Display principali considerati presenti
+   stMainDisplay.present = true;
+   stOledDisplay.present = true;
+   stRelayPump.present   = true;
+   stRelayAux.present    = true;
+ 
+   // Dopo l'inizializzazione li mettiamo a OK
+   stMainDisplay.ok = true;
+   stOledDisplay.ok = true;
+   stRelayPump.ok   = true;
+   stRelayAux.ok    = true;
+ 
+   // Sonde: tutte "presenti" (placeholder), OK se hanno dato misura valida
+@@ -1016,51 +1077,51 @@ void setup() {
+       stSonde[i].ok      = false;
+     }
+   }
+ 
+   puffer1.enabled = true;
+   puffer2.enabled = true;
+ 
+   // Prima lettura sensori
+   updateSensors();
+   updatePeripheralStatus();
+ 
+   // --- WebServer (route definite in altro blocco) ---
+   setupWebServerRoutes();
+   server.begin();
+ 
+   // --- Sequenza di avvio ---
+   showLinuxLikeBoot();
+   showStartupDiagScreen();
+   showStartupDiagOled();
+   showLogoAnimation();
+ 
+   // --- Stato iniziale UI ---
+   uiState = UI_DASHBOARD;
+ }
+ // =========================================================
+-//  TermoSystem - v1.0.1 RC
++//  TermoSystem - v1.1 Beta
+ //  BLOCCO 3: Top bar + Dashboard + Temi
+ // =========================================================
+ 
+ // =============================
+ //  COSTANTI GRAFICHE
+ // =============================
+ 
+ const float T_DISPLAY_MIN = 20.0f;
+ const float T_DISPLAY_MAX = 80.0f;
+ 
+ // Mappa temperatura (°C) in "livello" (0..maxLevel) per uso grafico
+ int mapTempToLevel(float temp, int maxLevel) {
+   if (isnan(temp)) return 0;
+   if (temp < T_DISPLAY_MIN) temp = T_DISPLAY_MIN;
+   if (temp > T_DISPLAY_MAX) temp = T_DISPLAY_MAX;
+   float ratio = (temp - T_DISPLAY_MIN) / (T_DISPLAY_MAX - T_DISPLAY_MIN);
+   int level = (int)(ratio * maxLevel);
+   if (level < 0) level = 0;
+   if (level > maxLevel) level = maxLevel;
+   return level;
+ }
+ 
+ // =============================
+ //  ICONA WIFI + TOP BAR
+ // =============================
+@@ -1190,51 +1251,51 @@ void drawHopperBar(int x, int yBottom, int height) {
+ 
+   mainDisp.drawFrame(x, yBottom - height, width, height);
+ 
+   if (hopper.hasSensor && hopper.percent >= 0.0f && hopper.percent <= 100.0f) {
+     int level = (int)((hopper.percent / 100.0f) * (height - 2));
+     if (level < 0) level = 0;
+     if (level > height - 2) level = height - 2;
+     mainDisp.drawBox(x+1, yBottom - 1 - level, width-2, level);
+   } else {
+     // N/A: piccole diagonali dentro il serbatoio
+     for (int yy = yBottom - height + 1; yy < yBottom; yy += 3) {
+       mainDisp.drawLine(x+1, yy, x+width-2, yy+3);
+     }
+   }
+ 
+   // scritta sotto
+   mainDisp.setFont(u8g2_font_4x6_tr);
+   char buf[10];
+   if (hopper.hasSensor && hopper.percent >= 0.0f && hopper.percent <= 100.0f) {
+     snprintf(buf, sizeof(buf), "%d%%", (int)(hopper.percent+0.5f));
+   } else {
+     snprintf(buf, sizeof(buf), "N/A");
+   }
+   int w = mainDisp.getStrWidth(buf);
+   int cx = x + (width - w) / 2;
+-  mainDisp.drawStr(cx, yBottom + 7, buf);
++  mainDisp.drawStr(cx, yBottom + 6, buf);
+ }
+ 
+ // =============================
+ //  PUFFER GRAFICI
+ // =============================
+ 
+ // Disegna un puffer "bicolore" (parte alta calda, parte bassa fredda)
+ // In monocromatico usiamo righe differenti sopra/sotto
+ void drawPufferTank(int x, int yBottom, int width, int height,
+                     float tMax, float tMin) {
+   // contorno
+   mainDisp.drawFrame(x, yBottom - height, width, height);
+ 
+   // livello interno (usiamo tMax come livello caldo)
+   int level = mapTempToLevel(tMax, height-2);
+   int hotHeight = level;
+   if (hotHeight < 0) hotHeight = 0;
+   if (hotHeight > height-2) hotHeight = height-2;
+ 
+   // parte "calda" (sopra) - pattern fitto
+   if (!isnan(tMax)) {
+     int yHotTop = yBottom - 1 - hotHeight;
+     for (int yy = yHotTop; yy < yBottom-1; yy++) {
+       if ((yy & 1) == 0) {
+         mainDisp.drawHLine(x+1, yy, width-2);
+@@ -1245,102 +1306,102 @@ void drawPufferTank(int x, int yBottom, int width, int height,
+   // parte "fredda" (sotto) - pattern più rado (se c'è tMin)
+   if (!isnan(tMin)) {
+     int coldHeight = mapTempToLevel(tMin, height-2);
+     if (coldHeight < 0) coldHeight = 0;
+     if (coldHeight > height-2) coldHeight = height-2;
+     int yColdBottom = yBottom-1;
+     int yColdTop    = yColdBottom - coldHeight;
+     for (int yy = yColdTop; yy <= yColdBottom; yy+=2) {
+       mainDisp.drawHLine(x+1, yy, width-2);
+     }
+   }
+ 
+   // indicatore livello hot (linea orizzontale)
+   if (!isnan(tMax)) {
+     int yLine = yBottom - 1 - hotHeight;
+     mainDisp.drawHLine(x+1, yLine, width-2);
+   }
+ }
+ 
+ // =============================
+ //  TEMA 1: CLASSIC
+ // =============================
+ 
+ void drawDashboardClassic() {
+   mainDisp.clearBuffer();
+-  drawTopBar("Dashboard");
++  drawTopBar(tr("Dashboard", "Dashboard", "仪表盘"));
+ 
+   // Area utile: da y=10 in giù
+-  int yBase   = 60;
++  int yBase   = 56;
+   int tankH   = 36;
+   int tankW   = 20;
+   int p1X     = 8;
+   int p2X     = 40;
+ 
+   // Puffer 1
+   drawPufferTank(p1X, yBase, tankW, tankH, puffer1.tMax, puffer1.tMin);
+   mainDisp.setFont(u8g2_font_5x8_tr);
+   mainDisp.drawStr(p1X+4, yBase - tankH - 2, "P1");
+   char buf[16];
+   if (!isnan(puffer1.tMax)) {
+     snprintf(buf, sizeof(buf), "%.1fC", puffer1.tMax);
+   } else {
+     snprintf(buf, sizeof(buf), "N/A");
+   }
+-  mainDisp.drawStr(p1X, yBase + 7, buf);
++  mainDisp.drawStr(p1X, yBase + 6, buf);
+ 
+   // Puffer 2
+   drawPufferTank(p2X, yBase, tankW, tankH, puffer2.tMax, puffer2.tMin);
+   mainDisp.drawStr(p2X+4, yBase - tankH - 2, "P2");
+   if (!isnan(puffer2.tMax)) {
+     snprintf(buf, sizeof(buf), "%.1fC", puffer2.tMax);
+   } else {
+     snprintf(buf, sizeof(buf), "N/A");
+   }
+-  mainDisp.drawStr(p2X, yBase + 7, buf);
++  mainDisp.drawStr(p2X, yBase + 6, buf);
+ 
+   // Hopper sul lato destro
+   drawHopperBar(100, yBase, 32);
+ 
+   // Pompa al centro in basso
+   drawPumpIcon(72, 40, pumpRelayState);
+ 
+   // Stato pompa
+   mainDisp.setFont(u8g2_font_5x8_tr);
+   snprintf(buf, sizeof(buf), "Pompa: %s", pumpRelayState ? "ON" : "OFF");
+   mainDisp.drawStr(60, 62, buf);
+ 
+   mainDisp.sendBuffer();
+ }
+ 
+ // =============================
+ //  TEMA 2: TECHNO (layout più aggressivo)
+ // =============================
+ 
+ void drawDashboardTechno() {
+   mainDisp.clearBuffer();
+-  drawTopBar("DASH:TECH");
++  drawTopBar(tr("DASH:TECH", "DASH:TECH", "科技模式"));
+ 
+   int yBase = 56;
+   int tankH = 30;
+   int tankW = 16;
+ 
+   // barre verticali stilizzate per P1 e P2
+   int p1X = 6;
+   int p2X = 30;
+ 
+   drawPufferTank(p1X, yBase, tankW, tankH, puffer1.tMax, puffer1.tMin);
+   drawPufferTank(p2X, yBase, tankW, tankH, puffer2.tMax, puffer2.tMin);
+ 
+   mainDisp.setFont(u8g2_font_4x6_tr);
+   mainDisp.drawStr(p1X+3, yBase - tankH - 2, "P1");
+   mainDisp.drawStr(p2X+3, yBase - tankH - 2, "P2");
+ 
+   char buf[16];
+   mainDisp.setFont(u8g2_font_5x8_tr);
+   if (!isnan(puffer1.tMax)) {
+     snprintf(buf, sizeof(buf), "%.1f", puffer1.tMax);
+   } else {
+     snprintf(buf, sizeof(buf), "--.-");
+   }
+   mainDisp.drawStr(p1X-1, yBase + 6, buf);
+ 
+@@ -1353,276 +1414,310 @@ void drawDashboardTechno() {
+ 
+   // Hopper come barra più alta e stretta
+   drawHopperBar(100, yBase, 40);
+ 
+   // tubi stilizzati verso pompa
+   mainDisp.drawLine(p1X + tankW, yBase-10, 60, yBase-10);
+   mainDisp.drawLine(p2X + tankW, yBase-20, 60, yBase-20);
+   mainDisp.drawLine(60, yBase-10, 72, 40);
+   mainDisp.drawLine(60, yBase-20, 72, 40);
+ 
+   drawPumpIcon(72, 40, pumpRelayState);
+ 
+   mainDisp.setFont(u8g2_font_4x6_tr);
+   snprintf(buf, sizeof(buf), "MODE:%s", pumpModeToString());
+   mainDisp.drawStr(52, 52, buf);
+ 
+   mainDisp.sendBuffer();
+ }
+ 
+ // =============================
+ //  TEMA 3: DARK LINES (molto minimale)
+ // =============================
+ 
+ void drawDashboardDarkLines() {
+   mainDisp.clearBuffer();
+-  drawTopBar("Dashboard");
++  drawTopBar(tr("Dashboard", "Dashboard", "仪表盘"));
+ 
+-  int yBase = 58;
++  int yBase = 54;
+   int tankH = 28;
+   int tankW = 14;
+ 
+   int p1X = 10;
+   int p2X = 36;
+ 
+   // contorni sottili, niente pattern, solo linee livello
+   mainDisp.drawFrame(p1X, yBase - tankH, tankW, tankH);
+   mainDisp.drawFrame(p2X, yBase - tankH, tankW, tankH);
+ 
+   int level1 = mapTempToLevel(puffer1.tMax, tankH-2);
+   int level2 = mapTempToLevel(puffer2.tMax, tankH-2);
+ 
+   if (!isnan(puffer1.tMax)) {
+     int yLine1 = yBase - 1 - level1;
+     mainDisp.drawHLine(p1X+1, yLine1, tankW-2);
+   }
+   if (!isnan(puffer2.tMax)) {
+     int yLine2 = yBase - 1 - level2;
+     mainDisp.drawHLine(p2X+1, yLine2, tankW-2);
+   }
+ 
+   mainDisp.setFont(u8g2_font_4x6_tr);
+   mainDisp.drawStr(p1X+3, yBase - tankH - 2, "P1");
+   mainDisp.drawStr(p2X+3, yBase - tankH - 2, "P2");
+ 
+   char buf[16];
+   mainDisp.setFont(u8g2_font_5x8_tr);
+   if (!isnan(puffer1.tMax)) snprintf(buf, sizeof(buf), "%.1f", puffer1.tMax); else snprintf(buf, sizeof(buf), "--.-");
+-  mainDisp.drawStr(p1X-1, yBase + 7, buf);
++  mainDisp.drawStr(p1X-1, yBase + 6, buf);
+   if (!isnan(puffer2.tMax)) snprintf(buf, sizeof(buf), "%.1f", puffer2.tMax); else snprintf(buf, sizeof(buf), "--.-");
+-  mainDisp.drawStr(p2X-1, yBase + 7, buf);
++  mainDisp.drawStr(p2X-1, yBase + 6, buf);
+ 
+   // Hopper lineare, solo contorno + livello
+   int hopX = 100;
+   int hopH = 32;
+   mainDisp.drawFrame(hopX, yBase - hopH, 10, hopH);
+   if (hopper.hasSensor && hopper.percent >= 0.0f && hopper.percent <= 100.0f) {
+     int level = (int)((hopper.percent / 100.0f) * (hopH-2));
+     if (level < 0) level = 0;
+     if (level > hopH-2) level = hopH-2;
+     int yLine = yBase - 1 - level;
+     mainDisp.drawHLine(hopX+1, yLine, 8);
+   }
+ 
+   // Piccola indicazione pompa in testo
+   mainDisp.setFont(u8g2_font_4x6_tr);
+   snprintf(buf, sizeof(buf), "P:%s", pumpRelayState ? "ON" : "OFF");
+   mainDisp.drawStr(60, 54, buf);
+ 
+   mainDisp.sendBuffer();
+ }
+ 
+ // =============================
+ //  TEMA 4: WAVE FLOW (enfasi sui tubi / flussi)
+ // =============================
+ 
+ void drawDashboardWaveFlow() {
+   mainDisp.clearBuffer();
+-  drawTopBar("Flow View");
++  drawTopBar(tr("Flow View", "Flow View", "流动视图"));
+ 
+   int yBase = 56;
+   int tankH = 32;
+   int tankW = 18;
+ 
+   int p1X = 6;
+   int p2X = 38;
+ 
+   drawPufferTank(p1X, yBase, tankW, tankH, puffer1.tMax, puffer1.tMin);
+   drawPufferTank(p2X, yBase, tankW, tankH, puffer2.tMax, puffer2.tMin);
+ 
+   // tubi ondulati da P2 verso P1 e da caldaia (immaginaria) verso P1
+   for (int i = 0; i < 3; i++) {
+     int y1 = yBase - 10 - i;
+     int y2 = yBase - 20 - i;
+     // onda
+     mainDisp.drawLine(p2X + tankW, y2, p1X - 2, y2);
+     if ((i & 1) == 0) {
+       for (int xx = p2X + tankW; xx < p1X - 2; xx+=4) {
+         mainDisp.drawPixel(xx, y2-1);
+       }
+     }
+     mainDisp.drawLine(p1X + tankW, y1, 80, y1);
+   }
+ 
+   // Hopper come silo più alto
+   drawHopperBar(100, yBase, 38);
+ 
+   // Pompa sul ritorno in basso
+   drawPumpIcon(72, 44, pumpRelayState);
+ 
+   mainDisp.setFont(u8g2_font_4x6_tr);
+   char buf[20];
+   snprintf(buf, sizeof(buf), "Set:%.1fC", pumpSetTemp);
+   mainDisp.drawStr(60, 54, buf);
+ 
+   mainDisp.sendBuffer();
+ }
+ 
+ // =============================
+ //  TEMA 5: CHRISTMAS (natalizio)
+ // =============================
+ 
+ void drawDashboardChristmas() {
+   mainDisp.clearBuffer();
+-  drawTopBar("Natale");
++  drawTopBar(tr("Natale", "Christmas", "圣诞"));
+ 
+-  int yBase = 58;
++  int yBase = 56;
+   int tankH = 32;
+   int tankW = 16;
+ 
+   int p1X = 10;
+   int p2X = 36;
+ 
+   // Puffer come "candele"
+   drawPufferTank(p1X, yBase, tankW, tankH, puffer1.tMax, puffer1.tMin);
+   drawPufferTank(p2X, yBase, tankW, tankH, puffer2.tMax, puffer2.tMin);
+ 
+   mainDisp.setFont(u8g2_font_4x6_tr);
+   mainDisp.drawStr(p1X+3, yBase - tankH - 3, "P1");
+   mainDisp.drawStr(p2X+3, yBase - tankH - 3, "P2");
+ 
+   // Piccole "fiamme" sopra i puffer
+   mainDisp.drawTriangle(p1X+8, yBase - tankH - 4, p1X+5, yBase - tankH, p1X+11, yBase - tankH);
+   mainDisp.drawTriangle(p2X+8, yBase - tankH - 4, p2X+5, yBase - tankH, p2X+11, yBase - tankH);
+ 
+   // Hopper come sacco dei regali
+   int hopX = 96;
+   int hopY = yBase;
+   mainDisp.drawFrame(hopX, hopY - 22, 16, 22);
+   mainDisp.drawLine(hopX, hopY - 18, hopX+15, hopY - 20);
+   // contenuto
+   if (hopper.hasSensor && hopper.percent >= 0.0f && hopper.percent <= 100.0f) {
+     int fillH = (int)((hopper.percent/100.0f) * 18);
+     if (fillH < 0) fillH = 0;
+     if (fillH > 18) fillH = 18;
+     mainDisp.drawBox(hopX+1, hopY - 2 - fillH, 14, fillH);
+   } else {
+     for (int yy = hopY-2; yy > hopY-20; yy-=3) {
+       mainDisp.drawHLine(hopX+1, yy, 14);
+     }
+   }
+ 
+   mainDisp.setFont(u8g2_font_4x6_tr);
+   char buf[16];
+   if (!isnan(puffer1.tMax)) snprintf(buf, sizeof(buf), "%.1fC", puffer1.tMax); else snprintf(buf, sizeof(buf), "N/A");
+-  mainDisp.drawStr(4, 64, buf);
++  mainDisp.drawStr(4, 60, buf);
+   if (!isnan(puffer2.tMax)) snprintf(buf, sizeof(buf), "%.1fC", puffer2.tMax); else snprintf(buf, sizeof(buf), "N/A");
+-  mainDisp.drawStr(40, 64, buf);
++  mainDisp.drawStr(40, 60, buf);
+ 
+   // Piccoli "fiocchi di neve" in alto
+   for (int x = 0; x < 128; x += 12) {
+     mainDisp.drawPixel(x+2, 12);
+     mainDisp.drawPixel(x+4, 14);
+   }
+ 
+   // Pompa con cappellino di Natale
+   drawPumpIcon(72, 40, pumpRelayState);
+   // cappellino
+   mainDisp.drawTriangle(68, 30, 76, 30, 72, 24);
+   mainDisp.drawDisc(72, 23, 1);
+ 
+   mainDisp.sendBuffer();
+ }
+ 
+ // =============================
+ //  DISPATCHER GENERALE DASHBOARD
+ // =============================
+ 
+ void drawDashboard() {
+   // se è Natale e l'utente non ha cambiato tema manualmente,
+   // potremmo forzare il tema natalizio; per ora usiamo solo
+   // l'autoSelectChristmasThemeIfNeeded() in setup.
+ 
+   switch (currentTheme) {
+     case THEME_CLASSIC:    drawDashboardClassic();    break;
+     case THEME_TECHNO:     drawDashboardTechno();     break;
+     case THEME_DARKLINES:  drawDashboardDarkLines();  break;
+     case THEME_WAVE:       drawDashboardWaveFlow();   break;
+     case THEME_CHRISTMAS:  drawDashboardChristmas();  break;
+     default:               drawDashboardClassic();    break;
+   }
+ }
+ // =========================================================
+-//  TermoSystem - v1.0.1 RC
++//  TermoSystem - v1.1 Beta
+ //  BLOCCO 4: Menu + schermate impostazioni + handler UI
+ // =========================================================
+ 
+ // =============================
+ //  MENU PRINCIPALE
+ // =============================
+ 
++enum MenuId {
++  MENU_DASHBOARD = 0,
++  MENU_STATUS,
++  MENU_PUMP,
++  MENU_DISPLAY,
++  MENU_TIME,
++  MENU_SYSTEM,
++  MENU_THEME,
++  MENU_LANGUAGE,
++  MENU_OTA,
++  MENU_FACTORY_RESET,
++  MENU_DIAG,
++  MENU_INFO,
++  MENU_COUNT
++};
++
++const char* const menuLabels[MENU_COUNT][LANG_COUNT] = {
++  { "Dashboard",     "Dashboard",     "仪表盘" },
++  { "Stato sistema", "System status", "系统状态" },
++  { "Pompa",         "Pump",          "水泵" },
++  { "Display",       "Display",       "显示" },
++  { "Orologio",      "Clock",         "时钟" },
++  { "Sistema",       "System",        "系统" },
++  { "Tema display",  "Display theme", "显示主题" },
++  { "Lingua",        "Language",      "语言" },
++  { "Agg. OTA",      "OTA update",    "OTA 更新" },
++  { "Factory reset", "Factory reset", "恢复出厂" },
++  { "Diagnostica",   "Diagnostics",   "诊断" },
++  { "Info",          "Info",          "信息" }
++};
++
+ struct MenuItem {
+-  const char* label;
++  MenuId      id;
+   UiState     target;
+ };
+ 
+ MenuItem mainMenu[] = {
+-  { "Dashboard",    UI_DASHBOARD },
+-  { "Stato sistema",UI_STATUS },
+-  { "Pompa",        UI_PUMP },
+-  { "Display",      UI_DISPLAY_SETTINGS },
+-  { "Orologio",     UI_TIME_SETTINGS },
+-  { "Sistema",      UI_SYSTEM_SETTINGS },
+-  { "Tema display", UI_THEME_SELECT },
+-  { "Diagnostica",  UI_DIAG },
+-  { "Info",         UI_INFO }
++  { MENU_DASHBOARD,     UI_DASHBOARD },
++  { MENU_STATUS,        UI_STATUS },
++  { MENU_PUMP,          UI_PUMP },
++  { MENU_DISPLAY,       UI_DISPLAY_SETTINGS },
++  { MENU_TIME,          UI_TIME_SETTINGS },
++  { MENU_SYSTEM,        UI_SYSTEM_SETTINGS },
++  { MENU_THEME,         UI_THEME_SELECT },
++  { MENU_LANGUAGE,      UI_LANGUAGE_SELECT },
++  { MENU_OTA,           UI_OTA_UPDATE },
++  { MENU_FACTORY_RESET, UI_FACTORY_RESET },
++  { MENU_DIAG,          UI_DIAG },
++  { MENU_INFO,          UI_INFO }
+ };
+ 
+ const int MENU_ITEMS   = sizeof(mainMenu) / sizeof(mainMenu[0]);
+ int       menuIndex    = 0;
+ int       menuTopIndex = 0;
+ const int MENU_VISIBLE = 4;
+ 
+ // =============================
+ //  STATO SCREEN
+ // =============================
+ 
+ int statusTopLine = 0;
+ 
+ void drawStatusScreen() {
+   mainDisp.clearBuffer();
+-  drawTopBar("Stato");
++  drawTopBar(tr("Stato", "Status", "状态"));
+ 
+   char upBuf[32];
+   formatUptime(upBuf, sizeof(upBuf));
+   float vcc = getVcc();
+ 
+   String lines[12];
+   int totalLines = 0;
+   char buf[40];
+ 
+   // P1
+   if (!isnan(puffer1.tMax)) snprintf(buf, sizeof(buf), "P1 Tmax: %.1fC", puffer1.tMax);
+   else snprintf(buf, sizeof(buf), "P1 Tmax: N/A");
+   lines[totalLines++] = String(buf);
+ 
+   if (!isnan(puffer1.tMin)) snprintf(buf, sizeof(buf), "P1 Tmin: %.1fC", puffer1.tMin);
+   else snprintf(buf, sizeof(buf), "P1 Tmin: N/A");
+   lines[totalLines++] = String(buf);
+ 
+   // P2
+   if (!isnan(puffer2.tMax)) snprintf(buf, sizeof(buf), "P2 Tmax: %.1fC", puffer2.tMax);
+   else snprintf(buf, sizeof(buf), "P2 Tmax: N/A");
+   lines[totalLines++] = String(buf);
+ 
+   if (!isnan(puffer2.tMin)) snprintf(buf, sizeof(buf), "P2 Tmin: %.1fC", puffer2.tMin);
+   else snprintf(buf, sizeof(buf), "P2 Tmin: N/A");
+@@ -1671,51 +1766,51 @@ void drawStatusScreen() {
+   if (statusTopLine > totalLines - VIS_LINES) {
+     statusTopLine = max(0, totalLines - VIS_LINES);
+   }
+ 
+   mainDisp.setFont(u8g2_font_6x10_tr);
+   for (int i = 0; i < VIS_LINES; i++) {
+     int idx = statusTopLine + i;
+     if (idx >= totalLines) break;
+     int y = 20 + i * 10;
+     mainDisp.setCursor(0, y);
+     mainDisp.print(lines[idx]);
+   }
+ 
+   mainDisp.sendBuffer();
+ }
+ 
+ // =============================
+ //  POMPA SCREEN (modo + setpoint)
+ // =============================
+ 
+ int  pumpScreenIndex = 0;    // 0=Modo, 1=Setpoint, 2=Back
+ bool pumpEditSetpoint = false;
+ 
+ void drawPumpScreen() {
+   mainDisp.clearBuffer();
+-  drawTopBar("Pompa");
++  drawTopBar(tr("Pompa", "Pump", "水泵"));
+ 
+   mainDisp.setFont(u8g2_font_6x10_tr);
+   mainDisp.drawStr(0, 18, "Controllo Pompa");
+ 
+   int yBase = 30;
+   char buf[32];
+ 
+   // Riga 0: Modo
+   int y0 = yBase;
+   if (pumpScreenIndex == 0 && !pumpEditSetpoint) {
+     mainDisp.drawBox(0, y0-8, 128, 10);
+     mainDisp.setDrawColor(0);
+   }
+   mainDisp.setCursor(2, y0);
+   mainDisp.print("Modo: ");
+   mainDisp.print(pumpModeToString());
+   if (pumpScreenIndex == 0 && !pumpEditSetpoint) mainDisp.setDrawColor(1);
+ 
+   // Riga 1: Setpoint
+   int y1 = yBase + 12;
+   if (pumpScreenIndex == 1) {
+     mainDisp.drawBox(0, y1-8, 128, 10);
+     mainDisp.setDrawColor(0);
+   }
+   mainDisp.setCursor(2, y1);
+@@ -1775,51 +1870,51 @@ void handleUiPump() {
+     // in edit setpoint
+     if (upPressed) {
+       pumpSetTemp += 0.5f;
+       if (pumpSetTemp > 90.0f) pumpSetTemp = 90.0f;
+     }
+     if (downPressed) {
+       pumpSetTemp -= 0.5f;
+       if (pumpSetTemp < 10.0f) pumpSetTemp = 10.0f;
+     }
+     if (selectPressed) {
+       // esce dall'edit e salva
+       pumpEditSetpoint = false;
+       savePumpConfig();
+     }
+   }
+ 
+   drawPumpScreen();
+ }
+ 
+ // =============================
+ //  DISPLAY SETTINGS SCREEN
+ // =============================
+ 
+ void drawDisplaySettingsScreen() {
+   mainDisp.clearBuffer();
+-  drawTopBar("Display");
++  drawTopBar(tr("Display", "Display", "显示"));
+ 
+   mainDisp.setFont(u8g2_font_6x10_tr);
+   mainDisp.drawStr(0, 18, "Impostazioni Display");
+ 
+   mainDisp.setCursor(0, 34);
+   mainDisp.print("Flip: ");
+   mainDisp.print(mainFlip ? "Capovolto" : "Normale");
+ 
+   mainDisp.setCursor(0, 48);
+   mainDisp.print("Contrasto: ");
+   mainDisp.print(mainContrast);
+ 
+   mainDisp.setFont(u8g2_font_4x6_tr);
+   mainDisp.drawStr(0, 62, "UP/DOWN=Contrasto, OK=Flip, OK lungo=Indietro");
+ 
+   mainDisp.sendBuffer();
+ }
+ 
+ void handleUiDisplaySettings() {
+   if (upPressed) {
+     if (mainContrast < 255 - 8) mainContrast += 8;
+     else mainContrast = 255;
+     mainDisp.setContrast(mainContrast);
+     saveDisplayConfig();
+   }
+@@ -1839,51 +1934,51 @@ void handleUiDisplaySettings() {
+     selStart = now;
+   }
+   if (!selNow && selPrev) {
+     unsigned long dur = now - selStart;
+     if (dur >= LONG_PRESS_MS) {
+       uiState = UI_MENU;
+     } else {
+       mainFlip = mainFlip ? 0 : 1;
+       mainDisp.setFlipMode(mainFlip);
+       saveDisplayConfig();
+     }
+   }
+   selPrev = selNow;
+ 
+   drawDisplaySettingsScreen();
+ }
+ 
+ // =============================
+ //  TIME SETTINGS SCREEN
+ // =============================
+ 
+ int timeScreenIndex = 0;  // 0=NTP, 1=Fuso, 2=Formato, 3=Indietro
+ 
+ void drawTimeSettingsScreen() {
+   mainDisp.clearBuffer();
+-  drawTopBar("Orologio");
++  drawTopBar(tr("Orologio", "Clock", "时钟"));
+ 
+   mainDisp.setFont(u8g2_font_6x10_tr);
+   mainDisp.drawStr(0, 18, "Impostazioni Orologio");
+ 
+   int yBase = 32;
+ 
+   int y0 = yBase;
+   if (timeScreenIndex == 0) {
+     mainDisp.drawBox(0, y0-8, 128, 10);
+     mainDisp.setDrawColor(0);
+   }
+   mainDisp.setCursor(2, y0);
+   mainDisp.print("Internet time: ");
+   mainDisp.print(clockUseNtp ? "SI" : "NO");
+   if (timeScreenIndex == 0) mainDisp.setDrawColor(1);
+ 
+   int y1 = yBase + 12;
+   if (timeScreenIndex == 1) {
+     mainDisp.drawBox(0, y1-8, 128, 10);
+     mainDisp.setDrawColor(0);
+   }
+   mainDisp.setCursor(2, y1);
+   mainDisp.print("Fuso: ");
+   mainDisp.print(TIMEZONES[clockTzIndex].city);
+   if (timeScreenIndex == 1) mainDisp.setDrawColor(1);
+@@ -1925,358 +2020,607 @@ void handleUiTimeSettings() {
+       clockUseNtp = !clockUseNtp;
+       saveGlobalConfig();
+       setupTimeConfig();
+     } else if (timeScreenIndex == 1) {
+       clockTzIndex++;
+       if (clockTzIndex >= TIMEZONES_COUNT) clockTzIndex = 0;
+       saveGlobalConfig();
+       setupTimeConfig();
+     } else if (timeScreenIndex == 2) {
+       clockIs24h = !clockIs24h;
+       saveGlobalConfig();
+     } else if (timeScreenIndex == 3) {
+       uiState = UI_MENU;
+     }
+   }
+ 
+   drawTimeSettingsScreen();
+ }
+ 
+ // =============================
+ //  SYSTEM SETTINGS SCREEN
+ // =============================
+ // voci: AUX, Puffer1, Puffer2, Sonda1..4, Indietro
+ 
+ int systemScreenIndex = 0; // 0=AUX, 1=P1, 2=P2, 3=Sp1,4=Sp2,5=Sp3,6=Sp4,7=Indietro
++int systemTopIndex = 0;
++const int SYSTEM_VISIBLE = 4;
+ 
+ void drawSystemSettingsScreen() {
+   mainDisp.clearBuffer();
+-  drawTopBar("Sistema");
++  drawTopBar(tr("Sistema", "System", "系统"));
+ 
+   mainDisp.setFont(u8g2_font_6x10_tr);
+-  mainDisp.drawStr(0, 18, "Impostazioni Sistema");
++  mainDisp.drawStr(0, 18, tr("Impostazioni Sistema", "System settings", "系统设置"));
+ 
++  const int systemTotal = 8;
+   int yBase = 30;
+-  auto drawRow = [&](int idx, const char* label, bool value) {
+-    int y = yBase + idx*10;
++  for (int i = 0; i < SYSTEM_VISIBLE; i++) {
++    int idx = systemTopIndex + i;
++    if (idx >= systemTotal) break;
++    int y = yBase + i * 10;
+     if (systemScreenIndex == idx) {
+       mainDisp.drawBox(0, y-8, 128, 10);
+       mainDisp.setDrawColor(0);
+     }
+     mainDisp.setCursor(2, y);
+-    mainDisp.print(label);
+-    if (idx < 7) {
+-      mainDisp.setCursor(100, y);
+-      mainDisp.print(value ? "ON" : "OFF");
++    switch (idx) {
++      case 0:
++        mainDisp.print("AUX rele");
++        mainDisp.setCursor(100, y);
++        mainDisp.print(auxRelayState ? "ON" : "OFF");
++        break;
++      case 1:
++        mainDisp.print("Puffer 1");
++        mainDisp.setCursor(100, y);
++        mainDisp.print(puffer1.enabled ? "ON" : "OFF");
++        break;
++      case 2:
++        mainDisp.print("Puffer 2");
++        mainDisp.setCursor(100, y);
++        mainDisp.print(puffer2.enabled ? "ON" : "OFF");
++        break;
++      case 3:
++        mainDisp.print("Sonda P1 MAX");
++        mainDisp.setCursor(100, y);
++        mainDisp.print(sonde[SONDA_P1_MAX].enabled ? "ON" : "OFF");
++        break;
++      case 4:
++        mainDisp.print("Sonda P1 MIN");
++        mainDisp.setCursor(100, y);
++        mainDisp.print(sonde[SONDA_P1_MIN].enabled ? "ON" : "OFF");
++        break;
++      case 5:
++        mainDisp.print("Sonda P2 MAX");
++        mainDisp.setCursor(100, y);
++        mainDisp.print(sonde[SONDA_P2_MAX].enabled ? "ON" : "OFF");
++        break;
++      case 6:
++        mainDisp.print("Sonda P2 MIN");
++        mainDisp.setCursor(100, y);
++        mainDisp.print(sonde[SONDA_P2_MIN].enabled ? "ON" : "OFF");
++        break;
++      case 7:
++        mainDisp.print(tr("Indietro", "Back", "返回"));
++        break;
+     }
+     if (systemScreenIndex == idx) mainDisp.setDrawColor(1);
+-  };
+-
+-  drawRow(0, "AUX rele",         auxRelayState);
+-  drawRow(1, "Puffer 1",         puffer1.enabled);
+-  drawRow(2, "Puffer 2",         puffer2.enabled);
+-  drawRow(3, "Sonda P1 MAX",     sonde[SONDA_P1_MAX].enabled);
+-  drawRow(4, "Sonda P1 MIN",     sonde[SONDA_P1_MIN].enabled);
+-  drawRow(5, "Sonda P2 MAX",     sonde[SONDA_P2_MAX].enabled);
+-  drawRow(6, "Sonda P2 MIN",     sonde[SONDA_P2_MIN].enabled);
+-
+-  int yLast = yBase + 7*10;
+-  if (systemScreenIndex == 7) {
+-    mainDisp.drawBox(0, yLast-8, 128, 10);
+-    mainDisp.setDrawColor(0);
+   }
+-  mainDisp.setCursor(2, yLast);
+-  mainDisp.print("Indietro");
+-  if (systemScreenIndex == 7) mainDisp.setDrawColor(1);
+ 
+   mainDisp.sendBuffer();
+ }
+ 
+ void handleUiSystemSettings() {
+   if (upPressed) {
+     systemScreenIndex--;
+     if (systemScreenIndex < 0) systemScreenIndex = 7;
+   }
+   if (downPressed) {
+     systemScreenIndex++;
+     if (systemScreenIndex > 7) systemScreenIndex = 0;
+   }
+ 
++  if (systemScreenIndex < systemTopIndex) {
++    systemTopIndex = systemScreenIndex;
++  }
++  if (systemScreenIndex >= systemTopIndex + SYSTEM_VISIBLE) {
++    systemTopIndex = systemScreenIndex - SYSTEM_VISIBLE + 1;
++  }
++
+   if (selectPressed) {
+     switch (systemScreenIndex) {
+       case 0:
+         auxRelayState = !auxRelayState;
+         applyAuxRelay(auxRelayState);
+         saveGlobalConfig();
+         break;
+       case 1:
+         puffer1.enabled = !puffer1.enabled;
+         saveGlobalConfig();
+         break;
+       case 2:
+         puffer2.enabled = !puffer2.enabled;
+         saveGlobalConfig();
+         break;
+       case 3:
+         sonde[SONDA_P1_MAX].enabled = !sonde[SONDA_P1_MAX].enabled;
+         saveGlobalConfig();
+         break;
+       case 4:
+         sonde[SONDA_P1_MIN].enabled = !sonde[SONDA_P1_MIN].enabled;
+         saveGlobalConfig();
+         break;
+       case 5:
+         sonde[SONDA_P2_MAX].enabled = !sonde[SONDA_P2_MAX].enabled;
+         saveGlobalConfig();
+         break;
+       case 6:
+         sonde[SONDA_P2_MIN].enabled = !sonde[SONDA_P2_MIN].enabled;
+         saveGlobalConfig();
+         break;
+       case 7:
+         uiState = UI_MENU;
+         break;
+     }
+   }
+ 
+   drawSystemSettingsScreen();
+ }
+ 
+ // =============================
+ //  THEME SELECT SCREEN
+ // =============================
+ 
+ int themeScreenIndex = 0;
++int themeTopIndex = 0;
++const int THEME_VISIBLE = 4;
+ 
+ void drawThemeSelectScreen() {
+   mainDisp.clearBuffer();
+-  drawTopBar("Tema");
++  drawTopBar(tr("Tema", "Theme", "主题"));
+ 
+   mainDisp.setFont(u8g2_font_6x10_tr);
+-  mainDisp.drawStr(0, 18, "Seleziona tema");
++  mainDisp.drawStr(0, 18, tr("Seleziona tema", "Select theme", "选择主题"));
+ 
+   int yBase = 32;
+ 
+-  for (int i = 0; i < THEME_COUNT && i < 5; i++) {
++  for (int i = 0; i < THEME_VISIBLE; i++) {
++    int idx = themeTopIndex + i;
++    if (idx >= THEME_COUNT) break;
+     int y = yBase + i*10;
+-    if (themeScreenIndex == i) {
++    if (themeScreenIndex == idx) {
+       mainDisp.drawBox(0, y-8, 128, 10);
+       mainDisp.setDrawColor(0);
+     }
+     mainDisp.setCursor(2, y);
+-    if (i == currentTheme) mainDisp.print("* ");
+-    else                   mainDisp.print("  ");
+-    mainDisp.print(THEMES[i].name);
+-    if (themeScreenIndex == i) mainDisp.setDrawColor(1);
++    if (idx == currentTheme) mainDisp.print("* ");
++    else                     mainDisp.print("  ");
++    mainDisp.print(THEMES[idx].name);
++    if (themeScreenIndex == idx) mainDisp.setDrawColor(1);
+   }
+ 
+   mainDisp.setFont(u8g2_font_4x6_tr);
+-  mainDisp.drawStr(0, 62, "OK=Seleziona, OK lungo=Indietro");
++  mainDisp.drawStr(0, 62, tr("OK=Seleziona, OK lungo=Indietro",
++                            "OK=Select, Hold OK=Back",
++                            "OK=选择, 长按OK=返回"));
+ 
+   mainDisp.sendBuffer();
+ }
+ 
+ void handleUiThemeSelect() {
+   if (upPressed) {
+     themeScreenIndex--;
+     if (themeScreenIndex < 0) themeScreenIndex = THEME_COUNT-1;
+   }
+   if (downPressed) {
+     themeScreenIndex++;
+     if (themeScreenIndex >= THEME_COUNT) themeScreenIndex = 0;
+   }
+ 
++  if (themeScreenIndex < themeTopIndex) {
++    themeTopIndex = themeScreenIndex;
++  }
++  if (themeScreenIndex >= themeTopIndex + THEME_VISIBLE) {
++    themeTopIndex = themeScreenIndex - THEME_VISIBLE + 1;
++  }
++
+   static bool selPrev = false;
+   static unsigned long selStart = 0;
+   bool selNow = (digitalRead(PIN_BTN_SELECT) == LOW);
+   unsigned long now = millis();
+ 
+   if (selNow && !selPrev) {
+     selStart = now;
+   }
+   if (!selNow && selPrev) {
+     unsigned long dur = now - selStart;
+     if (dur >= LONG_PRESS_MS) {
+       uiState = UI_MENU;
+     } else {
+       currentTheme = (ThemeId)themeScreenIndex;
+       saveGlobalConfig();
+     }
+   }
+   selPrev = selNow;
+ 
+   drawThemeSelectScreen();
+ }
+ 
++// =============================
++//  LANGUAGE SELECT SCREEN
++// =============================
++
++int languageScreenIndex = 0;
++
++void drawLanguageSelectScreen() {
++  mainDisp.clearBuffer();
++  drawTopBar(tr("Lingua", "Language", "语言"));
++
++  mainDisp.setFont(u8g2_font_6x10_tr);
++  mainDisp.drawStr(0, 18, tr("Seleziona lingua", "Select language", "选择语言"));
++
++  int yBase = 32;
++
++  for (int i = 0; i < LANG_COUNT; i++) {
++    int y = yBase + i*10;
++    if (languageScreenIndex == i) {
++      mainDisp.drawBox(0, y-8, 128, 10);
++      mainDisp.setDrawColor(0);
++    }
++    mainDisp.setCursor(2, y);
++    if (i == currentLanguage) mainDisp.print("* ");
++    else                      mainDisp.print("  ");
++    mainDisp.print(languageName((LanguageId)i));
++    if (languageScreenIndex == i) mainDisp.setDrawColor(1);
++  }
++
++  mainDisp.setFont(u8g2_font_4x6_tr);
++  mainDisp.drawStr(0, 62, tr("OK=Seleziona, OK lungo=Indietro",
++                            "OK=Select, Hold OK=Back",
++                            "OK=选择, 长按OK=返回"));
++
++  mainDisp.sendBuffer();
++}
++
++void handleUiLanguageSelect() {
++  if (upPressed) {
++    languageScreenIndex--;
++    if (languageScreenIndex < 0) languageScreenIndex = LANG_COUNT-1;
++  }
++  if (downPressed) {
++    languageScreenIndex++;
++    if (languageScreenIndex >= LANG_COUNT) languageScreenIndex = 0;
++  }
++
++  static bool selPrev = false;
++  static unsigned long selStart = 0;
++  bool selNow = (digitalRead(PIN_BTN_SELECT) == LOW);
++  unsigned long now = millis();
++
++  if (selNow && !selPrev) {
++    selStart = now;
++  }
++  if (!selNow && selPrev) {
++    unsigned long dur = now - selStart;
++    if (dur >= LONG_PRESS_MS) {
++      uiState = UI_MENU;
++    } else {
++      currentLanguage = (LanguageId)languageScreenIndex;
++      saveGlobalConfig();
++    }
++  }
++  selPrev = selNow;
++
++  drawLanguageSelectScreen();
++}
++
++// =============================
++//  OTA UPDATE SCREEN
++// =============================
++
++void drawOtaUpdateScreen(const char* statusLine) {
++  mainDisp.clearBuffer();
++  drawTopBar(tr("Agg. OTA", "OTA update", "OTA 更新"));
++  mainDisp.setFont(u8g2_font_6x10_tr);
++  mainDisp.drawStr(0, 20, tr("Aggiornamento OTA", "OTA update", "OTA 更新"));
++
++  mainDisp.setFont(u8g2_font_5x8_tr);
++  mainDisp.drawStr(0, 36, statusLine);
++
++  char buf[24];
++  if (otaProgress >= 0) {
++    snprintf(buf, sizeof(buf), "Progress: %d%%", otaProgress);
++    mainDisp.drawStr(0, 50, buf);
++  }
++
++  mainDisp.sendBuffer();
++}
++
++void startOtaUpdate() {
++  if (!wifiConnected) {
++    drawOtaUpdateScreen(tr("WiFi non connesso", "WiFi not connected", "WiFi 未连接"));
++    delay(1200);
++    uiState = UI_MENU;
++    return;
++  }
++
++  otaInProgress = true;
++  otaProgress = -1;
++  otaLastError = 0;
++  drawOtaUpdateScreen(tr("Connessione...", "Connecting...", "正在连接..."));
++  delay(300);
++
++  WiFiClientSecure client;
++  client.setInsecure();
++
++  ESPhttpUpdate.onProgress([](int cur, int total) {
++    if (total > 0) {
++      otaProgress = (cur * 100) / total;
++    }
++  });
++
++  t_httpUpdate_return ret = ESPhttpUpdate.update(client, OTA_FIRMWARE_URL);
++  if (ret == HTTP_UPDATE_OK) {
++    drawOtaUpdateScreen(tr("Update OK - Riavvio", "Update OK - Reboot", "更新完成 - 重启"));
++    delay(800);
++  } else {
++    otaLastError = ESPhttpUpdate.getLastError();
++    drawOtaUpdateScreen(tr("Errore OTA", "OTA error", "OTA 错误"));
++    delay(1200);
++    uiState = UI_MENU;
++  }
++  otaInProgress = false;
++}
++
++void handleUiOtaUpdate() {
++  if (otaStartRequested) {
++    otaStartRequested = false;
++    startOtaUpdate();
++  } else if (!otaInProgress) {
++    if (selectPressed) uiState = UI_MENU;
++    drawOtaUpdateScreen(tr("Premi OK per uscire", "Press OK to exit", "按 OK 退出"));
++  }
++}
++
++// =============================
++//  FACTORY RESET SCREEN
++// =============================
++
++int factoryResetIndex = 0; // 0=Annulla, 1=Conferma
++
++void drawFactoryResetScreen() {
++  mainDisp.clearBuffer();
++  drawTopBar(tr("Factory reset", "Factory reset", "恢复出厂"));
++  mainDisp.setFont(u8g2_font_6x10_tr);
++  mainDisp.drawStr(0, 20, tr("Reset di fabbrica", "Factory reset", "恢复出厂设置"));
++
++  int yBase = 36;
++  for (int i = 0; i < 2; i++) {
++    int y = yBase + i * 12;
++    if (factoryResetIndex == i) {
++      mainDisp.drawBox(0, y-8, 128, 10);
++      mainDisp.setDrawColor(0);
++    }
++    mainDisp.setCursor(2, y);
++    if (i == 0) mainDisp.print(tr("Annulla", "Cancel", "取消"));
++    else        mainDisp.print(tr("Conferma", "Confirm", "确认"));
++    if (factoryResetIndex == i) mainDisp.setDrawColor(1);
++  }
++
++  mainDisp.sendBuffer();
++}
++
++void drawFactoryResetProgress() {
++  mainDisp.clearBuffer();
++  drawTopBar(tr("Factory reset", "Factory reset", "恢复出厂"));
++  mainDisp.setFont(u8g2_font_6x10_tr);
++  mainDisp.drawStr(0, 30, tr("Reset in corso...", "Resetting...", "正在重置..."));
++  mainDisp.sendBuffer();
++}
++
++void handleUiFactoryReset() {
++  if (upPressed || downPressed) {
++    factoryResetIndex = 1 - factoryResetIndex;
++  }
++
++  if (selectPressed) {
++    if (factoryResetIndex == 0) {
++      uiState = UI_MENU;
++    } else {
++      drawFactoryResetProgress();
++      resetFactoryDefaults();
++      delay(800);
++      ESP.restart();
++    }
++  }
++
++  drawFactoryResetScreen();
++}
++
+ // =============================
+ //  DIAGNOSTICA & INFO RUNTIME
+ // =============================
+ 
+ void drawDiagScreen() {
+   mainDisp.clearBuffer();
+-  drawTopBar("Diagnostica");
++  drawTopBar(tr("Diagnostica", "Diagnostics", "诊断"));
+ 
+   mainDisp.setFont(u8g2_font_5x8_tr);
+   int y = 18;
+ 
+   auto line = [&](const char* lbl, bool ok) {
+     mainDisp.setCursor(0, y);
+     mainDisp.print(lbl);
+     mainDisp.setCursor(90, y);
+     mainDisp.print(ok ? "OK" : "N/A");
+     y += 8;
+   };
+ 
+   line("P1 MAX", sonde[SONDA_P1_MAX].ok);
+   line("P1 MIN", sonde[SONDA_P1_MIN].ok);
+   line("P2 MAX", sonde[SONDA_P2_MAX].ok);
+   line("P2 MIN", sonde[SONDA_P2_MIN].ok);
+   line("WiFi",   wifiConnected);
+   line("AP",     apMode);
+ 
+   float vcc = getVcc();
+   mainDisp.setCursor(0, y+4);
+   char buf[32];
+   snprintf(buf, sizeof(buf), "VCC MCU: %.2fV", vcc);
+   mainDisp.print(buf);
+ 
+   mainDisp.sendBuffer();
+ }
+ 
+ void handleUiDiag() {
+   if (selectPressed) uiState = UI_MENU;
+   drawDiagScreen();
+ }
+ 
+ void drawInfoScreen() {
+   mainDisp.clearBuffer();
+-  drawTopBar("Info");
++  drawTopBar(tr("Info", "Info", "信息"));
+ 
+   mainDisp.setFont(u8g2_font_6x10_tr);
+   mainDisp.drawStr(0, 20, "TermoSystem ESP8266");
+   mainDisp.setFont(u8g2_font_5x8_tr);
+   mainDisp.drawStr(0, 34, FW_VERSION);
+   mainDisp.drawStr(0, 46, "by Stephan W.");
+-  mainDisp.drawStr(0, 58, "Hold OK: Menu");
++  mainDisp.drawStr(0, 58, tr("OK lungo: Menu", "Hold OK: Menu", "长按OK: 菜单"));
+ 
+   mainDisp.sendBuffer();
+ }
+ 
+ void handleUiInfo() {
+   static bool selPrev = false;
+   static unsigned long selStart = 0;
+   bool selNow = (digitalRead(PIN_BTN_SELECT) == LOW);
+   unsigned long now = millis();
+ 
+   if (selNow && !selPrev) {
+     selStart = now;
+   }
+   if (!selNow && selPrev) {
+     unsigned long dur = now - selStart;
+     if (dur >= LONG_PRESS_MS) {
+       uiState = UI_MENU;
+     }
+   }
+   selPrev = selNow;
+ 
+   drawInfoScreen();
+ }
+ 
+ // =============================
+ //  MENU HANDLER
+ // =============================
+ 
+ void drawMenu() {
+   mainDisp.clearBuffer();
+-  drawTopBar("Menu");
++  drawTopBar(tr("Menu", "Menu", "菜单"));
+ 
+   mainDisp.setFont(u8g2_font_6x10_tr);
+ 
+   for (int i = 0; i < MENU_VISIBLE; i++) {
+     int idx = menuTopIndex + i;
+     if (idx >= MENU_ITEMS) break;
+ 
+     int y = 20 + i * 10;
+     if (idx == menuIndex) {
+       mainDisp.drawBox(0, y-8, 128, 10);
+       mainDisp.setDrawColor(0);
+       mainDisp.setCursor(2, y);
+       mainDisp.print("> ");
+-      mainDisp.print(mainMenu[idx].label);
++      mainDisp.print(menuLabels[mainMenu[idx].id][currentLanguage]);
+       mainDisp.setDrawColor(1);
+     } else {
+       mainDisp.setCursor(2, y);
+       mainDisp.print("  ");
+-      mainDisp.print(mainMenu[idx].label);
++      mainDisp.print(menuLabels[mainMenu[idx].id][currentLanguage]);
+     }
+   }
+ 
+   mainDisp.sendBuffer();
+ }
+ 
+ void handleUiMenu() {
+   if (upPressed) {
+     menuIndex--;
+     if (menuIndex < 0) menuIndex = MENU_ITEMS - 1;
+   }
+   if (downPressed) {
+     menuIndex++;
+     if (menuIndex >= MENU_ITEMS) menuIndex = 0;
+   }
+ 
+   // gestione scroll: appena arrivi alla 4a voce, scorre
+   if (menuIndex < menuTopIndex) {
+     menuTopIndex = menuIndex;
+   }
+   if (menuIndex >= menuTopIndex + MENU_VISIBLE) {
+     menuTopIndex = menuIndex - MENU_VISIBLE + 1;
+   }
+ 
+   if (selectPressed) {
+     uiState = mainMenu[menuIndex].target;
+     if (uiState == UI_STATUS)  statusTopLine = 0;
+     if (uiState == UI_PUMP)    pumpScreenIndex = 0;
+     if (uiState == UI_TIME_SETTINGS) timeScreenIndex = 0;
+-    if (uiState == UI_SYSTEM_SETTINGS) systemScreenIndex = 0;
+-    if (uiState == UI_THEME_SELECT) themeScreenIndex = (int)currentTheme;
++    if (uiState == UI_SYSTEM_SETTINGS) {
++      systemScreenIndex = 0;
++      systemTopIndex = 0;
++    }
++    if (uiState == UI_THEME_SELECT) {
++      themeScreenIndex = (int)currentTheme;
++      themeTopIndex = max(0, themeScreenIndex - THEME_VISIBLE + 1);
++    }
++    if (uiState == UI_LANGUAGE_SELECT) {
++      languageScreenIndex = (int)currentLanguage;
++    }
++    if (uiState == UI_OTA_UPDATE) {
++      otaStartRequested = true;
++    }
++    if (uiState == UI_FACTORY_RESET) {
++      factoryResetIndex = 0;
++    }
+   }
+ 
+   drawMenu();
+ }
+ 
+ // =============================
+ //  STATUS HANDLER
+ // =============================
+ 
+ void handleUiStatus() {
+   if (upPressed)   statusTopLine--;
+   if (downPressed) statusTopLine++;
+   if (selectPressed) uiState = UI_MENU;
+   drawStatusScreen();
+ }
+ // =========================================================
+-//  TermoSystem - v1.0.1 RC
++//  TermoSystem - v1.1 Beta
+ //  BLOCCO 5: OLED pages + diagnostica
+ // =========================================================
+ 
+ enum OledPage {
+   OLED_PAGE_VITALS = 0,
+   OLED_PAGE_HOPPER,
+   OLED_PAGE_INFO,
+   OLED_PAGE_COUNT
+ };
+ 
+ OledPage      oledPage        = OLED_PAGE_VITALS;
+ unsigned long oledLastChange  = 0;
+ const unsigned long OLED_PAGE_INTERVAL = 5000;  // 5s per pagina
+ 
+ // Per far apparire ogni tanto la mini animazione TermoSystem
+ bool          oledLogoPhase   = false;
+ unsigned long oledLogoTimer   = 0;
+ const unsigned long OLED_LOGO_INTERVAL = 30000; // ogni ~30s
+ 
+ // Piccolo helper per uptime compatto
+ void formatUptimeShort(char* buf, size_t len) {
+   unsigned long sec = millis() / 1000;
+   unsigned long h = sec / 3600;
+   unsigned long m = (sec % 3600) / 60;
+   snprintf(buf, len, "%luh %lum", h, m);
+@@ -2379,51 +2723,51 @@ void drawOledPageHopper() {
+ 
+   // Vcc MCU
+   snprintf(buf, sizeof(buf), "V MCU: %.2f", getVcc());
+   oled.drawStr(0, 44, buf);
+ 
+   // Wifi / AP
+   if (wifiConnected) {
+     snprintf(buf, sizeof(buf), "WiFi: OK");
+   } else if (apMode) {
+     snprintf(buf, sizeof(buf), "WiFi: AP");
+   } else {
+     snprintf(buf, sizeof(buf), "WiFi: NO");
+   }
+   oled.drawStr(0, 54, buf);
+ 
+   oled.sendBuffer();
+ }
+ 
+ // =============================
+ //  OLED PAGE 2: INFO COMPATTA + UPTIME
+ // =============================
+ void drawOledPageInfo() {
+   oled.clearBuffer();
+   oled.setFont(u8g2_font_5x8_tr);
+ 
+-  oled.drawStr(0, 10, "TermoSystem v1.0.1");
++  oled.drawStr(0, 10, "TermoSystem v1.1");
+ 
+   char buf[32];
+   formatUptimeShort(buf, sizeof(buf));
+   oled.drawStr(0, 22, buf);
+ 
+   // Data/ora
+   char timeBuf[8];
+   formatTimeString(timeBuf, sizeof(timeBuf));
+   oled.drawStr(0, 34, timeBuf);
+ 
+   // piccolo stato mini
+   snprintf(buf, sizeof(buf), "P:%s AUX:%s",
+            pumpRelayState ? "ON" : "OFF",
+            auxRelayState  ? "ON" : "OFF");
+   oled.drawStr(0, 44, buf);
+ 
+   if (wifiConnected) {
+     oled.drawStr(0, 54, "Net: WiFi");
+   } else if (apMode) {
+     oled.drawStr(0, 54, "Net: AP only");
+   } else {
+     oled.drawStr(0, 54, "Net: offline");
+   }
+ 
+   oled.sendBuffer();
+@@ -2466,51 +2810,51 @@ void drawOledVitals() {
+     drawOledMiniLogo();
+     oledLogoPhase = false;
+     oledLogoTimer = now;  // riparte il contatore
+     return;
+   }
+ 
+   // Cambio pagina periodico
+   if (now - oledLastChange > OLED_PAGE_INTERVAL) {
+     oledLastChange = now;
+     oledPage = (OledPage)((int(oledPage) + 1) % OLED_PAGE_COUNT);
+   }
+ 
+   // Scatta la richiesta di mostrare il logo ogni X secondi
+   if (now - oledLogoTimer > OLED_LOGO_INTERVAL) {
+     oledLogoPhase = true;
+     // la prossima chiamata a drawOledVitals() farà l'animazione
+   }
+ 
+   switch (oledPage) {
+     case OLED_PAGE_VITALS: drawOledPageVitals(); break;
+     case OLED_PAGE_HOPPER: drawOledPageHopper(); break;
+     case OLED_PAGE_INFO:   drawOledPageInfo();   break;
+   }
+ }
+ // =========================================================
+-//  TermoSystem - v1.0.1 RC
++//  TermoSystem - v1.1 Beta
+ //  BLOCCO 6: Logica pompa (isteresi) + LOOP principale
+ // =========================================================
+ 
+ // Supponiamo esistano già (dal Blocco 1) variabili globali:
+ // - PumpMode pumpMode;
+ // - bool pumpRelayState;
+ // - bool pumpLogicInit;
+ // - float pumpSetTemp;         // temperatura di avvio pompa
+ // - float pumpHysteresis;      // isteresi in gradi (es. 1.5)
+ // - SondaData sonde[SONDA_COUNT];
+ // - PufferData puffer1;
+ // e funzioni:
+ // - void applyPumpState(bool on);
+ 
+ // Se nel Blocco 1 non hai ancora inizializzato pumpHysteresis, usa 1.5
+ #ifndef PUMP_HYST_DEFAULT_DEFINED
+ float pumpHysteresis = 1.5f;
+ #define PUMP_HYST_DEFAULT_DEFINED
+ #endif
+ 
+ // =============================
+ //  LOGICA POMPA CON ISTERESI
+ // =============================
+ //
+ // Richiesta:
+@@ -2580,66 +2924,81 @@ void loop() {
+     case UI_PUMP: {
+       handleUiPump();
+       break;
+     }
+ 
+     case UI_DISPLAY_SETTINGS: {
+       handleUiDisplaySettings();
+       break;
+     }
+ 
+     case UI_TIME_SETTINGS: {
+       handleUiTimeSettings();
+       break;
+     }
+ 
+     case UI_SYSTEM_SETTINGS: {
+       handleUiSystemSettings();
+       break;
+     }
+ 
+     case UI_THEME_SELECT: {
+       handleUiThemeSelect();
+       break;
+     }
+ 
++    case UI_LANGUAGE_SELECT: {
++      handleUiLanguageSelect();
++      break;
++    }
++
++    case UI_OTA_UPDATE: {
++      handleUiOtaUpdate();
++      break;
++    }
++
++    case UI_FACTORY_RESET: {
++      handleUiFactoryReset();
++      break;
++    }
++
+     case UI_DIAG: {
+       handleUiDiag();
+       break;
+     }
+ 
+     case UI_INFO: {
+       handleUiInfo();
+       break;
+     }
+   }
+ 
+   // Piccola pausa per non saturare la CPU e per dare tempo ai display
+   delay(80);
+ }
+ // =========================================================
+-//  TermoSystem - v1.0.1 RC
++//  TermoSystem - v1.1 Beta
+ //  BLOCCO 7: Storico, API avanzate, WebApp animata
+ // =========================================================
+ 
+ // =============================
+ //  STORICO TEMPERATURE & POMPA
+ // =============================
+ 
+ const int HIST_LEN = 60;               // ultimi 60 campioni
+ float histT1[HIST_LEN];                // P1 Tmax
+ float histT2[HIST_LEN];                // P2 Tmax
+ bool  histPump[HIST_LEN];              // stato pompa
+ unsigned long histTs[HIST_LEN];        // timestamp (millis / 1000)
+ int   histCount      = 0;
+ int   histHead       = 0;
+ unsigned long lastHistSampleMs = 0;
+ const unsigned long HIST_INTERVAL_MS = 60000;   // 1 minuto
+ 
+ void addHistorySample() {
+   unsigned long now = millis();
+   if (now - lastHistSampleMs < HIST_INTERVAL_MS) return;
+   lastHistSampleMs = now;
+ 
+   int idx = histHead;
+   histHead = (histHead + 1) % HIST_LEN;
+   if (histCount < HIST_LEN) histCount++;
