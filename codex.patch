@@ -1,9 +1,9 @@
 diff --git a/Build1.1Beta/TermoSystem v1.1Beta.ino b/Build1.1Beta/TermoSystem v1.1Beta.ino
 new file mode 100644
-index 0000000000000000000000000000000000000000..1fe2937b6a4e4b8e92e0c7e34a73311d452086bc
+index 0000000000000000000000000000000000000000..07d0766b2a657a7aa46e69d5dc0d6c7a17437a41
 --- /dev/null
 +++ b/Build1.1Beta/TermoSystem v1.1Beta.ino	
-@@ -0,0 +1,4764 @@
+@@ -0,0 +1,4771 @@
 +// =========================================================
 +//  TermoSystem - v1.2.1
 +//  BLOCCO 1: Config & Funzioni di base
@@ -231,6 +231,13 @@ index 0000000000000000000000000000000000000000..1fe2937b6a4e4b8e92e0c7e34a73311d
 +PubSubClient mqttClient(mqttNetClient);
 +unsigned long lastMqttPublishMs = 0;
 +const unsigned long MQTT_PUBLISH_INTERVAL_MS = 10000;
++
++// Forward declarations for daily metrics dependencies
++struct PufferData;
++extern bool pumpRelayState;
++extern float pumpSetTemp;
++extern const float PUMP_HYST;
++extern PufferData puffer1;
 +
 +// =============================
 +//  STATISTICHE GIORNALIERE
