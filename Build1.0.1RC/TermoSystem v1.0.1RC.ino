@@ -1,5 +1,5 @@
 // =========================================================
-//  TermoSystem - v1.1 Beta
+//  TermoSystem - v1.0.1 RC
 //  BLOCCO 1: Config & Funzioni di base
 // =========================================================
 
@@ -8,11 +8,9 @@
 #include <U8g2lib.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
-#include <ESP8266httpUpdate.h>
 #include <EEPROM.h>
 #include <math.h>
 #include <time.h>
-#include <WiFiClientSecure.h>
 
 // ====== Prototipi funzioni usate prima di essere definite ======
 void applyPumpState(bool on);
@@ -32,7 +30,7 @@ void setupWebServerRoutes();
 // =============================
 //  VERSIONE
 // =============================
-#define FW_VERSION "TermoSystem v1.1 Beta"
+#define FW_VERSION "TermoSystem v1.0.1 RC"
 
 // =============================
 //  PIN DEFINITIONS
@@ -108,7 +106,6 @@ const int EEPROM_ADDR_GLOBAL_USE_NTP   = 142; // uint8_t (0/1)
 const int EEPROM_ADDR_GLOBAL_IS_24H    = 143; // uint8_t (0/1)
 const int EEPROM_ADDR_GLOBAL_TZ_INDEX  = 144; // uint8_t
 const int EEPROM_ADDR_GLOBAL_AUX_STATE = 145; // uint8_t (0/1)
-const int EEPROM_ADDR_GLOBAL_LANG      = 146; // uint8_t (0=IT,1=EN,2=ZH)
 const int EEPROM_ADDR_GLOBAL_SENSE_EN  = 150; // 4 bits per sonde attive
 
 // =============================
@@ -127,9 +124,6 @@ enum UiState {
   UI_TIME_SETTINGS,
   UI_SYSTEM_SETTINGS,
   UI_THEME_SELECT,
-  UI_LANGUAGE_SELECT,
-  UI_OTA_UPDATE,
-  UI_FACTORY_RESET,
   UI_DIAG,
   UI_INFO
 };
@@ -166,37 +160,6 @@ const ThemeConfig THEMES[THEME_COUNT] = {
 ThemeId currentTheme = THEME_CLASSIC;
 
 // =============================
-//  LINGUE
-// =============================
-
-enum LanguageId : uint8_t {
-  LANG_IT = 0,
-  LANG_EN,
-  LANG_ZH,
-  LANG_COUNT
-};
-
-LanguageId currentLanguage = LANG_IT;
-
-const char* tr(const char* it, const char* en, const char* zh) {
-  switch (currentLanguage) {
-    case LANG_EN: return en;
-    case LANG_ZH: return zh;
-    case LANG_IT:
-    default:      return it;
-  }
-}
-
-const char* languageName(LanguageId lang) {
-  switch (lang) {
-    case LANG_IT: return "Italiano";
-    case LANG_EN: return "English";
-    case LANG_ZH: return "中文";
-    default:      return "??";
-  }
-}
-
-// =============================
 //  WIFI CONFIG
 // =============================
 
@@ -209,17 +172,6 @@ WifiConfig wifiConf;
 bool wifiConfigured = false;
 bool wifiConnected  = false;
 bool apMode         = false;
-
-// =============================
-//  OTA UPDATE
-// =============================
-
-// Imposta l'URL RAW del tuo repo GitHub al file OTA/LiveUpdate.bin
-const char* OTA_FIRMWARE_URL = "https://raw.githubusercontent.com/USER/REPO/main/OTA/LiveUpdate.bin";
-bool otaStartRequested = false;
-bool otaInProgress = false;
-int  otaProgress = -1;
-int  otaLastError = 0;
 
 // =============================
 //  PULSANTI (debounce)
@@ -617,7 +569,6 @@ void loadGlobalConfig() {
     clockIs24h     = true;
     clockTzIndex   = 0;
     auxRelayState  = false;
-    currentLanguage = LANG_IT;
     for (int i = 0; i < SONDA_COUNT; i++) {
       sonde[i].enabled = true;  // di default tutte attive
     }
@@ -632,15 +583,12 @@ void loadGlobalConfig() {
   uint8_t h24  = EEPROM.read(EEPROM_ADDR_GLOBAL_IS_24H);
   uint8_t tz   = EEPROM.read(EEPROM_ADDR_GLOBAL_TZ_INDEX);
   uint8_t aux  = EEPROM.read(EEPROM_ADDR_GLOBAL_AUX_STATE);
-  uint8_t lang = EEPROM.read(EEPROM_ADDR_GLOBAL_LANG);
   uint8_t sen  = EEPROM.read(EEPROM_ADDR_GLOBAL_SENSE_EN);
 
   clockUseNtp  = (ntp != 0);
   clockIs24h   = (h24 != 0);
   clockTzIndex = (tz >= TIMEZONES_COUNT) ? 0 : tz;
   auxRelayState = (aux != 0);
-  if (lang >= LANG_COUNT) lang = LANG_IT;
-  currentLanguage = (LanguageId)lang;
 
   for (int i = 0; i < SONDA_COUNT; i++) {
     bool en = (sen & (1 << i)) != 0;
@@ -655,7 +603,6 @@ void saveGlobalConfig() {
   EEPROM.write(EEPROM_ADDR_GLOBAL_IS_24H,   clockIs24h  ? 1 : 0);
   EEPROM.write(EEPROM_ADDR_GLOBAL_TZ_INDEX, clockTzIndex);
   EEPROM.write(EEPROM_ADDR_GLOBAL_AUX_STATE, auxRelayState ? 1 : 0);
-  EEPROM.write(EEPROM_ADDR_GLOBAL_LANG,     (uint8_t)currentLanguage);
 
   uint8_t sen = 0;
   for (int i = 0; i < SONDA_COUNT; i++) {
@@ -663,14 +610,6 @@ void saveGlobalConfig() {
   }
   EEPROM.write(EEPROM_ADDR_GLOBAL_SENSE_EN, sen);
 
-  EEPROM.commit();
-}
-
-void resetFactoryDefaults() {
-  EEPROM.write(EEPROM_ADDR_WIFI_MAGIC,    0x00);
-  EEPROM.write(EEPROM_ADDR_DISP_MAGIC,    0x00);
-  EEPROM.write(EEPROM_ADDR_PUMP_MAGIC,    0x00);
-  EEPROM.write(EEPROM_ADDR_GLOBAL_MAGIC,  0x00);
   EEPROM.commit();
 }
 
@@ -808,7 +747,7 @@ void updatePumpLogic() {
   }
 }
 // =========================================================
-//  TermoSystem - v1.1 Beta
+//  TermoSystem - v1.0.1 RC
 //  BLOCCO 2: setup() + startup stile Linux + animazione logo
 // =========================================================
 
@@ -1099,7 +1038,7 @@ void setup() {
   uiState = UI_DASHBOARD;
 }
 // =========================================================
-//  TermoSystem - v1.1 Beta
+//  TermoSystem - v1.0.1 RC
 //  BLOCCO 3: Top bar + Dashboard + Temi
 // =========================================================
 
@@ -1273,7 +1212,7 @@ void drawHopperBar(int x, int yBottom, int height) {
   }
   int w = mainDisp.getStrWidth(buf);
   int cx = x + (width - w) / 2;
-  mainDisp.drawStr(cx, yBottom + 6, buf);
+  mainDisp.drawStr(cx, yBottom + 7, buf);
 }
 
 // =============================
@@ -1328,10 +1267,10 @@ void drawPufferTank(int x, int yBottom, int width, int height,
 
 void drawDashboardClassic() {
   mainDisp.clearBuffer();
-  drawTopBar(tr("Dashboard", "Dashboard", "仪表盘"));
+  drawTopBar("Dashboard");
 
   // Area utile: da y=10 in giù
-  int yBase   = 56;
+  int yBase   = 60;
   int tankH   = 36;
   int tankW   = 20;
   int p1X     = 8;
@@ -1347,7 +1286,7 @@ void drawDashboardClassic() {
   } else {
     snprintf(buf, sizeof(buf), "N/A");
   }
-  mainDisp.drawStr(p1X, yBase + 6, buf);
+  mainDisp.drawStr(p1X, yBase + 7, buf);
 
   // Puffer 2
   drawPufferTank(p2X, yBase, tankW, tankH, puffer2.tMax, puffer2.tMin);
@@ -1357,7 +1296,7 @@ void drawDashboardClassic() {
   } else {
     snprintf(buf, sizeof(buf), "N/A");
   }
-  mainDisp.drawStr(p2X, yBase + 6, buf);
+  mainDisp.drawStr(p2X, yBase + 7, buf);
 
   // Hopper sul lato destro
   drawHopperBar(100, yBase, 32);
@@ -1379,7 +1318,7 @@ void drawDashboardClassic() {
 
 void drawDashboardTechno() {
   mainDisp.clearBuffer();
-  drawTopBar(tr("DASH:TECH", "DASH:TECH", "科技模式"));
+  drawTopBar("DASH:TECH");
 
   int yBase = 56;
   int tankH = 30;
@@ -1436,9 +1375,9 @@ void drawDashboardTechno() {
 
 void drawDashboardDarkLines() {
   mainDisp.clearBuffer();
-  drawTopBar(tr("Dashboard", "Dashboard", "仪表盘"));
+  drawTopBar("Dashboard");
 
-  int yBase = 54;
+  int yBase = 58;
   int tankH = 28;
   int tankW = 14;
 
@@ -1468,9 +1407,9 @@ void drawDashboardDarkLines() {
   char buf[16];
   mainDisp.setFont(u8g2_font_5x8_tr);
   if (!isnan(puffer1.tMax)) snprintf(buf, sizeof(buf), "%.1f", puffer1.tMax); else snprintf(buf, sizeof(buf), "--.-");
-  mainDisp.drawStr(p1X-1, yBase + 6, buf);
+  mainDisp.drawStr(p1X-1, yBase + 7, buf);
   if (!isnan(puffer2.tMax)) snprintf(buf, sizeof(buf), "%.1f", puffer2.tMax); else snprintf(buf, sizeof(buf), "--.-");
-  mainDisp.drawStr(p2X-1, yBase + 6, buf);
+  mainDisp.drawStr(p2X-1, yBase + 7, buf);
 
   // Hopper lineare, solo contorno + livello
   int hopX = 100;
@@ -1498,7 +1437,7 @@ void drawDashboardDarkLines() {
 
 void drawDashboardWaveFlow() {
   mainDisp.clearBuffer();
-  drawTopBar(tr("Flow View", "Flow View", "流动视图"));
+  drawTopBar("Flow View");
 
   int yBase = 56;
   int tankH = 32;
@@ -1544,9 +1483,9 @@ void drawDashboardWaveFlow() {
 
 void drawDashboardChristmas() {
   mainDisp.clearBuffer();
-  drawTopBar(tr("Natale", "Christmas", "圣诞"));
+  drawTopBar("Natale");
 
-  int yBase = 56;
+  int yBase = 58;
   int tankH = 32;
   int tankW = 16;
 
@@ -1585,9 +1524,9 @@ void drawDashboardChristmas() {
   mainDisp.setFont(u8g2_font_4x6_tr);
   char buf[16];
   if (!isnan(puffer1.tMax)) snprintf(buf, sizeof(buf), "%.1fC", puffer1.tMax); else snprintf(buf, sizeof(buf), "N/A");
-  mainDisp.drawStr(4, 60, buf);
+  mainDisp.drawStr(4, 64, buf);
   if (!isnan(puffer2.tMax)) snprintf(buf, sizeof(buf), "%.1fC", puffer2.tMax); else snprintf(buf, sizeof(buf), "N/A");
-  mainDisp.drawStr(40, 60, buf);
+  mainDisp.drawStr(40, 64, buf);
 
   // Piccoli "fiocchi di neve" in alto
   for (int x = 0; x < 128; x += 12) {
@@ -1623,7 +1562,7 @@ void drawDashboard() {
   }
 }
 // =========================================================
-//  TermoSystem - v1.1 Beta
+//  TermoSystem - v1.0.1 RC
 //  BLOCCO 4: Menu + schermate impostazioni + handler UI
 // =========================================================
 
@@ -1631,55 +1570,21 @@ void drawDashboard() {
 //  MENU PRINCIPALE
 // =============================
 
-enum MenuId {
-  MENU_DASHBOARD = 0,
-  MENU_STATUS,
-  MENU_PUMP,
-  MENU_DISPLAY,
-  MENU_TIME,
-  MENU_SYSTEM,
-  MENU_THEME,
-  MENU_LANGUAGE,
-  MENU_OTA,
-  MENU_FACTORY_RESET,
-  MENU_DIAG,
-  MENU_INFO,
-  MENU_COUNT
-};
-
-const char* const menuLabels[MENU_COUNT][LANG_COUNT] = {
-  { "Dashboard",     "Dashboard",     "仪表盘" },
-  { "Stato sistema", "System status", "系统状态" },
-  { "Pompa",         "Pump",          "水泵" },
-  { "Display",       "Display",       "显示" },
-  { "Orologio",      "Clock",         "时钟" },
-  { "Sistema",       "System",        "系统" },
-  { "Tema display",  "Display theme", "显示主题" },
-  { "Lingua",        "Language",      "语言" },
-  { "Agg. OTA",      "OTA update",    "OTA 更新" },
-  { "Factory reset", "Factory reset", "恢复出厂" },
-  { "Diagnostica",   "Diagnostics",   "诊断" },
-  { "Info",          "Info",          "信息" }
-};
-
 struct MenuItem {
-  MenuId      id;
+  const char* label;
   UiState     target;
 };
 
 MenuItem mainMenu[] = {
-  { MENU_DASHBOARD,     UI_DASHBOARD },
-  { MENU_STATUS,        UI_STATUS },
-  { MENU_PUMP,          UI_PUMP },
-  { MENU_DISPLAY,       UI_DISPLAY_SETTINGS },
-  { MENU_TIME,          UI_TIME_SETTINGS },
-  { MENU_SYSTEM,        UI_SYSTEM_SETTINGS },
-  { MENU_THEME,         UI_THEME_SELECT },
-  { MENU_LANGUAGE,      UI_LANGUAGE_SELECT },
-  { MENU_OTA,           UI_OTA_UPDATE },
-  { MENU_FACTORY_RESET, UI_FACTORY_RESET },
-  { MENU_DIAG,          UI_DIAG },
-  { MENU_INFO,          UI_INFO }
+  { "Dashboard",    UI_DASHBOARD },
+  { "Stato sistema",UI_STATUS },
+  { "Pompa",        UI_PUMP },
+  { "Display",      UI_DISPLAY_SETTINGS },
+  { "Orologio",     UI_TIME_SETTINGS },
+  { "Sistema",      UI_SYSTEM_SETTINGS },
+  { "Tema display", UI_THEME_SELECT },
+  { "Diagnostica",  UI_DIAG },
+  { "Info",         UI_INFO }
 };
 
 const int MENU_ITEMS   = sizeof(mainMenu) / sizeof(mainMenu[0]);
@@ -1695,7 +1600,7 @@ int statusTopLine = 0;
 
 void drawStatusScreen() {
   mainDisp.clearBuffer();
-  drawTopBar(tr("Stato", "Status", "状态"));
+  drawTopBar("Stato");
 
   char upBuf[32];
   formatUptime(upBuf, sizeof(upBuf));
@@ -1788,7 +1693,7 @@ bool pumpEditSetpoint = false;
 
 void drawPumpScreen() {
   mainDisp.clearBuffer();
-  drawTopBar(tr("Pompa", "Pump", "水泵"));
+  drawTopBar("Pompa");
 
   mainDisp.setFont(u8g2_font_6x10_tr);
   mainDisp.drawStr(0, 18, "Controllo Pompa");
@@ -1892,7 +1797,7 @@ void handleUiPump() {
 
 void drawDisplaySettingsScreen() {
   mainDisp.clearBuffer();
-  drawTopBar(tr("Display", "Display", "显示"));
+  drawTopBar("Display");
 
   mainDisp.setFont(u8g2_font_6x10_tr);
   mainDisp.drawStr(0, 18, "Impostazioni Display");
@@ -1956,7 +1861,7 @@ int timeScreenIndex = 0;  // 0=NTP, 1=Fuso, 2=Formato, 3=Indietro
 
 void drawTimeSettingsScreen() {
   mainDisp.clearBuffer();
-  drawTopBar(tr("Orologio", "Clock", "时钟"));
+  drawTopBar("Orologio");
 
   mainDisp.setFont(u8g2_font_6x10_tr);
   mainDisp.drawStr(0, 18, "Impostazioni Orologio");
@@ -2042,69 +1947,46 @@ void handleUiTimeSettings() {
 // voci: AUX, Puffer1, Puffer2, Sonda1..4, Indietro
 
 int systemScreenIndex = 0; // 0=AUX, 1=P1, 2=P2, 3=Sp1,4=Sp2,5=Sp3,6=Sp4,7=Indietro
-int systemTopIndex = 0;
-const int SYSTEM_VISIBLE = 4;
 
 void drawSystemSettingsScreen() {
   mainDisp.clearBuffer();
-  drawTopBar(tr("Sistema", "System", "系统"));
+  drawTopBar("Sistema");
 
   mainDisp.setFont(u8g2_font_6x10_tr);
-  mainDisp.drawStr(0, 18, tr("Impostazioni Sistema", "System settings", "系统设置"));
+  mainDisp.drawStr(0, 18, "Impostazioni Sistema");
 
-  const int systemTotal = 8;
   int yBase = 30;
-  for (int i = 0; i < SYSTEM_VISIBLE; i++) {
-    int idx = systemTopIndex + i;
-    if (idx >= systemTotal) break;
-    int y = yBase + i * 10;
+  auto drawRow = [&](int idx, const char* label, bool value) {
+    int y = yBase + idx*10;
     if (systemScreenIndex == idx) {
       mainDisp.drawBox(0, y-8, 128, 10);
       mainDisp.setDrawColor(0);
     }
     mainDisp.setCursor(2, y);
-    switch (idx) {
-      case 0:
-        mainDisp.print("AUX rele");
-        mainDisp.setCursor(100, y);
-        mainDisp.print(auxRelayState ? "ON" : "OFF");
-        break;
-      case 1:
-        mainDisp.print("Puffer 1");
-        mainDisp.setCursor(100, y);
-        mainDisp.print(puffer1.enabled ? "ON" : "OFF");
-        break;
-      case 2:
-        mainDisp.print("Puffer 2");
-        mainDisp.setCursor(100, y);
-        mainDisp.print(puffer2.enabled ? "ON" : "OFF");
-        break;
-      case 3:
-        mainDisp.print("Sonda P1 MAX");
-        mainDisp.setCursor(100, y);
-        mainDisp.print(sonde[SONDA_P1_MAX].enabled ? "ON" : "OFF");
-        break;
-      case 4:
-        mainDisp.print("Sonda P1 MIN");
-        mainDisp.setCursor(100, y);
-        mainDisp.print(sonde[SONDA_P1_MIN].enabled ? "ON" : "OFF");
-        break;
-      case 5:
-        mainDisp.print("Sonda P2 MAX");
-        mainDisp.setCursor(100, y);
-        mainDisp.print(sonde[SONDA_P2_MAX].enabled ? "ON" : "OFF");
-        break;
-      case 6:
-        mainDisp.print("Sonda P2 MIN");
-        mainDisp.setCursor(100, y);
-        mainDisp.print(sonde[SONDA_P2_MIN].enabled ? "ON" : "OFF");
-        break;
-      case 7:
-        mainDisp.print(tr("Indietro", "Back", "返回"));
-        break;
+    mainDisp.print(label);
+    if (idx < 7) {
+      mainDisp.setCursor(100, y);
+      mainDisp.print(value ? "ON" : "OFF");
     }
     if (systemScreenIndex == idx) mainDisp.setDrawColor(1);
+  };
+
+  drawRow(0, "AUX rele",         auxRelayState);
+  drawRow(1, "Puffer 1",         puffer1.enabled);
+  drawRow(2, "Puffer 2",         puffer2.enabled);
+  drawRow(3, "Sonda P1 MAX",     sonde[SONDA_P1_MAX].enabled);
+  drawRow(4, "Sonda P1 MIN",     sonde[SONDA_P1_MIN].enabled);
+  drawRow(5, "Sonda P2 MAX",     sonde[SONDA_P2_MAX].enabled);
+  drawRow(6, "Sonda P2 MIN",     sonde[SONDA_P2_MIN].enabled);
+
+  int yLast = yBase + 7*10;
+  if (systemScreenIndex == 7) {
+    mainDisp.drawBox(0, yLast-8, 128, 10);
+    mainDisp.setDrawColor(0);
   }
+  mainDisp.setCursor(2, yLast);
+  mainDisp.print("Indietro");
+  if (systemScreenIndex == 7) mainDisp.setDrawColor(1);
 
   mainDisp.sendBuffer();
 }
@@ -2117,13 +1999,6 @@ void handleUiSystemSettings() {
   if (downPressed) {
     systemScreenIndex++;
     if (systemScreenIndex > 7) systemScreenIndex = 0;
-  }
-
-  if (systemScreenIndex < systemTopIndex) {
-    systemTopIndex = systemScreenIndex;
-  }
-  if (systemScreenIndex >= systemTopIndex + SYSTEM_VISIBLE) {
-    systemTopIndex = systemScreenIndex - SYSTEM_VISIBLE + 1;
   }
 
   if (selectPressed) {
@@ -2171,37 +2046,31 @@ void handleUiSystemSettings() {
 // =============================
 
 int themeScreenIndex = 0;
-int themeTopIndex = 0;
-const int THEME_VISIBLE = 4;
 
 void drawThemeSelectScreen() {
   mainDisp.clearBuffer();
-  drawTopBar(tr("Tema", "Theme", "主题"));
+  drawTopBar("Tema");
 
   mainDisp.setFont(u8g2_font_6x10_tr);
-  mainDisp.drawStr(0, 18, tr("Seleziona tema", "Select theme", "选择主题"));
+  mainDisp.drawStr(0, 18, "Seleziona tema");
 
   int yBase = 32;
 
-  for (int i = 0; i < THEME_VISIBLE; i++) {
-    int idx = themeTopIndex + i;
-    if (idx >= THEME_COUNT) break;
+  for (int i = 0; i < THEME_COUNT && i < 5; i++) {
     int y = yBase + i*10;
-    if (themeScreenIndex == idx) {
+    if (themeScreenIndex == i) {
       mainDisp.drawBox(0, y-8, 128, 10);
       mainDisp.setDrawColor(0);
     }
     mainDisp.setCursor(2, y);
-    if (idx == currentTheme) mainDisp.print("* ");
-    else                     mainDisp.print("  ");
-    mainDisp.print(THEMES[idx].name);
-    if (themeScreenIndex == idx) mainDisp.setDrawColor(1);
+    if (i == currentTheme) mainDisp.print("* ");
+    else                   mainDisp.print("  ");
+    mainDisp.print(THEMES[i].name);
+    if (themeScreenIndex == i) mainDisp.setDrawColor(1);
   }
 
   mainDisp.setFont(u8g2_font_4x6_tr);
-  mainDisp.drawStr(0, 62, tr("OK=Seleziona, OK lungo=Indietro",
-                            "OK=Select, Hold OK=Back",
-                            "OK=选择, 长按OK=返回"));
+  mainDisp.drawStr(0, 62, "OK=Seleziona, OK lungo=Indietro");
 
   mainDisp.sendBuffer();
 }
@@ -2214,13 +2083,6 @@ void handleUiThemeSelect() {
   if (downPressed) {
     themeScreenIndex++;
     if (themeScreenIndex >= THEME_COUNT) themeScreenIndex = 0;
-  }
-
-  if (themeScreenIndex < themeTopIndex) {
-    themeTopIndex = themeScreenIndex;
-  }
-  if (themeScreenIndex >= themeTopIndex + THEME_VISIBLE) {
-    themeTopIndex = themeScreenIndex - THEME_VISIBLE + 1;
   }
 
   static bool selPrev = false;
@@ -2246,203 +2108,12 @@ void handleUiThemeSelect() {
 }
 
 // =============================
-//  LANGUAGE SELECT SCREEN
-// =============================
-
-int languageScreenIndex = 0;
-
-void drawLanguageSelectScreen() {
-  mainDisp.clearBuffer();
-  drawTopBar(tr("Lingua", "Language", "语言"));
-
-  mainDisp.setFont(u8g2_font_6x10_tr);
-  mainDisp.drawStr(0, 18, tr("Seleziona lingua", "Select language", "选择语言"));
-
-  int yBase = 32;
-
-  for (int i = 0; i < LANG_COUNT; i++) {
-    int y = yBase + i*10;
-    if (languageScreenIndex == i) {
-      mainDisp.drawBox(0, y-8, 128, 10);
-      mainDisp.setDrawColor(0);
-    }
-    mainDisp.setCursor(2, y);
-    if (i == currentLanguage) mainDisp.print("* ");
-    else                      mainDisp.print("  ");
-    mainDisp.print(languageName((LanguageId)i));
-    if (languageScreenIndex == i) mainDisp.setDrawColor(1);
-  }
-
-  mainDisp.setFont(u8g2_font_4x6_tr);
-  mainDisp.drawStr(0, 62, tr("OK=Seleziona, OK lungo=Indietro",
-                            "OK=Select, Hold OK=Back",
-                            "OK=选择, 长按OK=返回"));
-
-  mainDisp.sendBuffer();
-}
-
-void handleUiLanguageSelect() {
-  if (upPressed) {
-    languageScreenIndex--;
-    if (languageScreenIndex < 0) languageScreenIndex = LANG_COUNT-1;
-  }
-  if (downPressed) {
-    languageScreenIndex++;
-    if (languageScreenIndex >= LANG_COUNT) languageScreenIndex = 0;
-  }
-
-  static bool selPrev = false;
-  static unsigned long selStart = 0;
-  bool selNow = (digitalRead(PIN_BTN_SELECT) == LOW);
-  unsigned long now = millis();
-
-  if (selNow && !selPrev) {
-    selStart = now;
-  }
-  if (!selNow && selPrev) {
-    unsigned long dur = now - selStart;
-    if (dur >= LONG_PRESS_MS) {
-      uiState = UI_MENU;
-    } else {
-      currentLanguage = (LanguageId)languageScreenIndex;
-      saveGlobalConfig();
-    }
-  }
-  selPrev = selNow;
-
-  drawLanguageSelectScreen();
-}
-
-// =============================
-//  OTA UPDATE SCREEN
-// =============================
-
-void drawOtaUpdateScreen(const char* statusLine) {
-  mainDisp.clearBuffer();
-  drawTopBar(tr("Agg. OTA", "OTA update", "OTA 更新"));
-  mainDisp.setFont(u8g2_font_6x10_tr);
-  mainDisp.drawStr(0, 20, tr("Aggiornamento OTA", "OTA update", "OTA 更新"));
-
-  mainDisp.setFont(u8g2_font_5x8_tr);
-  mainDisp.drawStr(0, 36, statusLine);
-
-  char buf[24];
-  if (otaProgress >= 0) {
-    snprintf(buf, sizeof(buf), "Progress: %d%%", otaProgress);
-    mainDisp.drawStr(0, 50, buf);
-  }
-
-  mainDisp.sendBuffer();
-}
-
-void startOtaUpdate() {
-  if (!wifiConnected) {
-    drawOtaUpdateScreen(tr("WiFi non connesso", "WiFi not connected", "WiFi 未连接"));
-    delay(1200);
-    uiState = UI_MENU;
-    return;
-  }
-
-  otaInProgress = true;
-  otaProgress = -1;
-  otaLastError = 0;
-  drawOtaUpdateScreen(tr("Connessione...", "Connecting...", "正在连接..."));
-  delay(300);
-
-  WiFiClientSecure client;
-  client.setInsecure();
-
-  ESPhttpUpdate.onProgress([](int cur, int total) {
-    if (total > 0) {
-      otaProgress = (cur * 100) / total;
-    }
-  });
-
-  t_httpUpdate_return ret = ESPhttpUpdate.update(client, OTA_FIRMWARE_URL);
-  if (ret == HTTP_UPDATE_OK) {
-    drawOtaUpdateScreen(tr("Update OK - Riavvio", "Update OK - Reboot", "更新完成 - 重启"));
-    delay(800);
-  } else {
-    otaLastError = ESPhttpUpdate.getLastError();
-    drawOtaUpdateScreen(tr("Errore OTA", "OTA error", "OTA 错误"));
-    delay(1200);
-    uiState = UI_MENU;
-  }
-  otaInProgress = false;
-}
-
-void handleUiOtaUpdate() {
-  if (otaStartRequested) {
-    otaStartRequested = false;
-    startOtaUpdate();
-  } else if (!otaInProgress) {
-    if (selectPressed) uiState = UI_MENU;
-    drawOtaUpdateScreen(tr("Premi OK per uscire", "Press OK to exit", "按 OK 退出"));
-  }
-}
-
-// =============================
-//  FACTORY RESET SCREEN
-// =============================
-
-int factoryResetIndex = 0; // 0=Annulla, 1=Conferma
-
-void drawFactoryResetScreen() {
-  mainDisp.clearBuffer();
-  drawTopBar(tr("Factory reset", "Factory reset", "恢复出厂"));
-  mainDisp.setFont(u8g2_font_6x10_tr);
-  mainDisp.drawStr(0, 20, tr("Reset di fabbrica", "Factory reset", "恢复出厂设置"));
-
-  int yBase = 36;
-  for (int i = 0; i < 2; i++) {
-    int y = yBase + i * 12;
-    if (factoryResetIndex == i) {
-      mainDisp.drawBox(0, y-8, 128, 10);
-      mainDisp.setDrawColor(0);
-    }
-    mainDisp.setCursor(2, y);
-    if (i == 0) mainDisp.print(tr("Annulla", "Cancel", "取消"));
-    else        mainDisp.print(tr("Conferma", "Confirm", "确认"));
-    if (factoryResetIndex == i) mainDisp.setDrawColor(1);
-  }
-
-  mainDisp.sendBuffer();
-}
-
-void drawFactoryResetProgress() {
-  mainDisp.clearBuffer();
-  drawTopBar(tr("Factory reset", "Factory reset", "恢复出厂"));
-  mainDisp.setFont(u8g2_font_6x10_tr);
-  mainDisp.drawStr(0, 30, tr("Reset in corso...", "Resetting...", "正在重置..."));
-  mainDisp.sendBuffer();
-}
-
-void handleUiFactoryReset() {
-  if (upPressed || downPressed) {
-    factoryResetIndex = 1 - factoryResetIndex;
-  }
-
-  if (selectPressed) {
-    if (factoryResetIndex == 0) {
-      uiState = UI_MENU;
-    } else {
-      drawFactoryResetProgress();
-      resetFactoryDefaults();
-      delay(800);
-      ESP.restart();
-    }
-  }
-
-  drawFactoryResetScreen();
-}
-
-// =============================
 //  DIAGNOSTICA & INFO RUNTIME
 // =============================
 
 void drawDiagScreen() {
   mainDisp.clearBuffer();
-  drawTopBar(tr("Diagnostica", "Diagnostics", "诊断"));
+  drawTopBar("Diagnostica");
 
   mainDisp.setFont(u8g2_font_5x8_tr);
   int y = 18;
@@ -2478,14 +2149,14 @@ void handleUiDiag() {
 
 void drawInfoScreen() {
   mainDisp.clearBuffer();
-  drawTopBar(tr("Info", "Info", "信息"));
+  drawTopBar("Info");
 
   mainDisp.setFont(u8g2_font_6x10_tr);
   mainDisp.drawStr(0, 20, "TermoSystem ESP8266");
   mainDisp.setFont(u8g2_font_5x8_tr);
   mainDisp.drawStr(0, 34, FW_VERSION);
   mainDisp.drawStr(0, 46, "by Stephan W.");
-  mainDisp.drawStr(0, 58, tr("OK lungo: Menu", "Hold OK: Menu", "长按OK: 菜单"));
+  mainDisp.drawStr(0, 58, "Hold OK: Menu");
 
   mainDisp.sendBuffer();
 }
@@ -2516,7 +2187,7 @@ void handleUiInfo() {
 
 void drawMenu() {
   mainDisp.clearBuffer();
-  drawTopBar(tr("Menu", "Menu", "菜单"));
+  drawTopBar("Menu");
 
   mainDisp.setFont(u8g2_font_6x10_tr);
 
@@ -2530,12 +2201,12 @@ void drawMenu() {
       mainDisp.setDrawColor(0);
       mainDisp.setCursor(2, y);
       mainDisp.print("> ");
-      mainDisp.print(menuLabels[mainMenu[idx].id][currentLanguage]);
+      mainDisp.print(mainMenu[idx].label);
       mainDisp.setDrawColor(1);
     } else {
       mainDisp.setCursor(2, y);
       mainDisp.print("  ");
-      mainDisp.print(menuLabels[mainMenu[idx].id][currentLanguage]);
+      mainDisp.print(mainMenu[idx].label);
     }
   }
 
@@ -2565,23 +2236,8 @@ void handleUiMenu() {
     if (uiState == UI_STATUS)  statusTopLine = 0;
     if (uiState == UI_PUMP)    pumpScreenIndex = 0;
     if (uiState == UI_TIME_SETTINGS) timeScreenIndex = 0;
-    if (uiState == UI_SYSTEM_SETTINGS) {
-      systemScreenIndex = 0;
-      systemTopIndex = 0;
-    }
-    if (uiState == UI_THEME_SELECT) {
-      themeScreenIndex = (int)currentTheme;
-      themeTopIndex = max(0, themeScreenIndex - THEME_VISIBLE + 1);
-    }
-    if (uiState == UI_LANGUAGE_SELECT) {
-      languageScreenIndex = (int)currentLanguage;
-    }
-    if (uiState == UI_OTA_UPDATE) {
-      otaStartRequested = true;
-    }
-    if (uiState == UI_FACTORY_RESET) {
-      factoryResetIndex = 0;
-    }
+    if (uiState == UI_SYSTEM_SETTINGS) systemScreenIndex = 0;
+    if (uiState == UI_THEME_SELECT) themeScreenIndex = (int)currentTheme;
   }
 
   drawMenu();
@@ -2598,7 +2254,7 @@ void handleUiStatus() {
   drawStatusScreen();
 }
 // =========================================================
-//  TermoSystem - v1.1 Beta
+//  TermoSystem - v1.0.1 RC
 //  BLOCCO 5: OLED pages + diagnostica
 // =========================================================
 
@@ -2745,7 +2401,7 @@ void drawOledPageInfo() {
   oled.clearBuffer();
   oled.setFont(u8g2_font_5x8_tr);
 
-  oled.drawStr(0, 10, "TermoSystem v1.1");
+  oled.drawStr(0, 10, "TermoSystem v1.0.1");
 
   char buf[32];
   formatUptimeShort(buf, sizeof(buf));
@@ -2832,7 +2488,7 @@ void drawOledVitals() {
   }
 }
 // =========================================================
-//  TermoSystem - v1.1 Beta
+//  TermoSystem - v1.0.1 RC
 //  BLOCCO 6: Logica pompa (isteresi) + LOOP principale
 // =========================================================
 
@@ -2946,21 +2602,6 @@ void loop() {
       break;
     }
 
-    case UI_LANGUAGE_SELECT: {
-      handleUiLanguageSelect();
-      break;
-    }
-
-    case UI_OTA_UPDATE: {
-      handleUiOtaUpdate();
-      break;
-    }
-
-    case UI_FACTORY_RESET: {
-      handleUiFactoryReset();
-      break;
-    }
-
     case UI_DIAG: {
       handleUiDiag();
       break;
@@ -2976,7 +2617,7 @@ void loop() {
   delay(80);
 }
 // =========================================================
-//  TermoSystem - v1.1 Beta
+//  TermoSystem - v1.0.1 RC
 //  BLOCCO 7: Storico, API avanzate, WebApp animata
 // =========================================================
 
