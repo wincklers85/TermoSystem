@@ -1,9 +1,9 @@
 diff --git a/Build1.1Beta/TermoSystem v1.1Beta.ino b/Build1.1Beta/TermoSystem v1.1Beta.ino
 new file mode 100644
-index 0000000000000000000000000000000000000000..07d0766b2a657a7aa46e69d5dc0d6c7a17437a41
+index 0000000000000000000000000000000000000000..375d0ce9ab3d964a6ca2d779c7ca02552fc198c2
 --- /dev/null
 +++ b/Build1.1Beta/TermoSystem v1.1Beta.ino	
-@@ -0,0 +1,4771 @@
+@@ -0,0 +1,4764 @@
 +// =========================================================
 +//  TermoSystem - v1.2.1
 +//  BLOCCO 1: Config & Funzioni di base
@@ -232,68 +232,6 @@ index 0000000000000000000000000000000000000000..07d0766b2a657a7aa46e69d5dc0d6c7a
 +unsigned long lastMqttPublishMs = 0;
 +const unsigned long MQTT_PUBLISH_INTERVAL_MS = 10000;
 +
-+// Forward declarations for daily metrics dependencies
-+struct PufferData;
-+extern bool pumpRelayState;
-+extern float pumpSetTemp;
-+extern const float PUMP_HYST;
-+extern PufferData puffer1;
-+
-+// =============================
-+//  STATISTICHE GIORNALIERE
-+// =============================
-+
-+unsigned long dailyPumpOnMs = 0;
-+int dailyLowTempEvents = 0;
-+float dailyMinP1 = NAN;
-+float dailyMaxP1 = NAN;
-+int dailyStamp = -1;
-+bool lowTempState = false;
-+unsigned long lastMetricsMs = 0;
-+
-+int getDayStamp() {
-+  struct tm info;
-+  if (getLocalTimeSafe(&info)) {
-+    return (info.tm_year * 1000) + info.tm_yday;
-+  }
-+  return (int)(millis() / 86400000UL);
-+}
-+
-+void updateDailyMetrics() {
-+  unsigned long now = millis();
-+  int stamp = getDayStamp();
-+  if (dailyStamp == -1) dailyStamp = stamp;
-+  if (stamp != dailyStamp) {
-+    dailyStamp = stamp;
-+    dailyPumpOnMs = 0;
-+    dailyLowTempEvents = 0;
-+    dailyMinP1 = NAN;
-+    dailyMaxP1 = NAN;
-+    lowTempState = false;
-+  }
-+
-+  if (lastMetricsMs == 0) lastMetricsMs = now;
-+  unsigned long delta = now - lastMetricsMs;
-+  lastMetricsMs = now;
-+  if (pumpRelayState) {
-+    dailyPumpOnMs += delta;
-+  }
-+
-+  if (!isnan(puffer1.tMax)) {
-+    if (isnan(dailyMinP1) || puffer1.tMax < dailyMinP1) dailyMinP1 = puffer1.tMax;
-+    if (isnan(dailyMaxP1) || puffer1.tMax > dailyMaxP1) dailyMaxP1 = puffer1.tMax;
-+  }
-+
-+  float threshold = pumpSetTemp - PUMP_HYST;
-+  if (!isnan(puffer1.tMax)) {
-+    bool below = puffer1.tMax < threshold;
-+    if (below && !lowTempState) {
-+      dailyLowTempEvents++;
-+    }
-+    lowTempState = below;
-+  }
-+}
-+
 +// =============================
 +//  OTA UPDATE
 +// =============================
@@ -409,6 +347,61 @@ index 0000000000000000000000000000000000000000..07d0766b2a657a7aa46e69d5dc0d6c7a
 +
 +PufferData puffer1;
 +PufferData puffer2;
++
++// =============================
++//  STATISTICHE GIORNALIERE
++// =============================
++
++unsigned long dailyPumpOnMs = 0;
++int dailyLowTempEvents = 0;
++float dailyMinP1 = NAN;
++float dailyMaxP1 = NAN;
++int dailyStamp = -1;
++bool lowTempState = false;
++unsigned long lastMetricsMs = 0;
++
++int getDayStamp() {
++  struct tm info;
++  if (getLocalTimeSafe(&info)) {
++    return (info.tm_year * 1000) + info.tm_yday;
++  }
++  return (int)(millis() / 86400000UL);
++}
++
++void updateDailyMetrics() {
++  unsigned long now = millis();
++  int stamp = getDayStamp();
++  if (dailyStamp == -1) dailyStamp = stamp;
++  if (stamp != dailyStamp) {
++    dailyStamp = stamp;
++    dailyPumpOnMs = 0;
++    dailyLowTempEvents = 0;
++    dailyMinP1 = NAN;
++    dailyMaxP1 = NAN;
++    lowTempState = false;
++  }
++
++  if (lastMetricsMs == 0) lastMetricsMs = now;
++  unsigned long delta = now - lastMetricsMs;
++  lastMetricsMs = now;
++  if (pumpRelayState) {
++    dailyPumpOnMs += delta;
++  }
++
++  if (!isnan(puffer1.tMax)) {
++    if (isnan(dailyMinP1) || puffer1.tMax < dailyMinP1) dailyMinP1 = puffer1.tMax;
++    if (isnan(dailyMaxP1) || puffer1.tMax > dailyMaxP1) dailyMaxP1 = puffer1.tMax;
++  }
++
++  float threshold = pumpSetTemp - PUMP_HYST;
++  if (!isnan(puffer1.tMax)) {
++    bool below = puffer1.tMax < threshold;
++    if (below && !lowTempState) {
++      dailyLowTempEvents++;
++    }
++    lowTempState = below;
++  }
++}
 +
 +// =============================
 +//  HOPPER PELLET (placeholder)
