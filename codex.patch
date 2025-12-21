@@ -1,11 +1,11 @@
 diff --git a/Build1.1Beta/TermoSystem v1.1Beta.ino b/Build1.1Beta/TermoSystem v1.1Beta.ino
 new file mode 100644
-index 0000000000000000000000000000000000000000..375d0ce9ab3d964a6ca2d779c7ca02552fc198c2
+index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f46c010e7c
 --- /dev/null
 +++ b/Build1.1Beta/TermoSystem v1.1Beta.ino	
 @@ -0,0 +1,4764 @@
 +// =========================================================
-+//  TermoSystem - v1.2.1
++//  TermoSystem - v1.2.2
 +//  BLOCCO 1: Config & Funzioni di base
 +// =========================================================
 +
@@ -39,7 +39,7 @@ index 0000000000000000000000000000000000000000..375d0ce9ab3d964a6ca2d779c7ca0255
 +// =============================
 +//  VERSIONE
 +// =============================
-+#define FW_VERSION "TermoSystem v1.2.1"
++#define FW_VERSION "TermoSystem v1.2.2"
 +
 +// =============================
 +//  PIN DEFINITIONS
@@ -961,7 +961,7 @@ index 0000000000000000000000000000000000000000..375d0ce9ab3d964a6ca2d779c7ca0255
 +  }
 +}
 +// =========================================================
-+//  TermoSystem - v1.2.1
++//  TermoSystem - v1.2.2
 +//  BLOCCO 2: setup() + startup stile Linux + animazione logo
 +// =========================================================
 +
@@ -1254,7 +1254,7 @@ index 0000000000000000000000000000000000000000..375d0ce9ab3d964a6ca2d779c7ca0255
 +  uiState = UI_DASHBOARD;
 +}
 +// =========================================================
-+//  TermoSystem - v1.2.1
++//  TermoSystem - v1.2.2
 +//  BLOCCO 3: Top bar + Dashboard + Temi
 +// =========================================================
 +
@@ -1809,7 +1809,7 @@ index 0000000000000000000000000000000000000000..375d0ce9ab3d964a6ca2d779c7ca0255
 +  }
 +}
 +// =========================================================
-+//  TermoSystem - v1.2.1
++//  TermoSystem - v1.2.2
 +//  BLOCCO 4: Menu + schermate impostazioni + handler UI
 +// =========================================================
 +
@@ -3080,7 +3080,7 @@ index 0000000000000000000000000000000000000000..375d0ce9ab3d964a6ca2d779c7ca0255
 +  oled.clearBuffer();
 +  oled.setFont(u8g2_font_5x8_tr);
 +
-+  oled.drawStr(0, 10, "TermoSystem v1.2.1");
++  oled.drawStr(0, 10, "TermoSystem v1.2.2");
 +
 +  char buf[32];
 +  formatUptimeShort(buf, sizeof(buf));
@@ -3167,7 +3167,7 @@ index 0000000000000000000000000000000000000000..375d0ce9ab3d964a6ca2d779c7ca0255
 +  }
 +}
 +// =========================================================
-+//  TermoSystem - v1.2.1
++//  TermoSystem - v1.2.2
 +//  BLOCCO 6: Logica pompa (isteresi) + LOOP principale
 +// =========================================================
 +
@@ -3328,7 +3328,7 @@ index 0000000000000000000000000000000000000000..375d0ce9ab3d964a6ca2d779c7ca0255
 +  delay(80);
 +}
 +// =========================================================
-+//  TermoSystem - v1.2.1
++//  TermoSystem - v1.2.2
 +//  BLOCCO 7: Storico, API avanzate, WebApp animata
 +// =========================================================
 +
