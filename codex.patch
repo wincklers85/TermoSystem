@@ -1,11 +1,11 @@
 diff --git a/Build1.1Beta/TermoSystem v1.1Beta.ino b/Build1.1Beta/TermoSystem v1.1Beta.ino
 new file mode 100644
-index 0000000000000000000000000000000000000000..ebf17715863e2ef5252dce024a5306ad09cc304a
+index 0000000000000000000000000000000000000000..1fe2937b6a4e4b8e92e0c7e34a73311d452086bc
 --- /dev/null
 +++ b/Build1.1Beta/TermoSystem v1.1Beta.ino	
-@@ -0,0 +1,4763 @@
+@@ -0,0 +1,4764 @@
 +// =========================================================
-+//  TermoSystem - v1.2 Final
++//  TermoSystem - v1.2.1
 +//  BLOCCO 1: Config & Funzioni di base
 +// =========================================================
 +
@@ -39,7 +39,7 @@ index 0000000000000000000000000000000000000000..ebf17715863e2ef5252dce024a5306ad
 +// =============================
 +//  VERSIONE
 +// =============================
-+#define FW_VERSION "TermoSystem v1.2 Final"
++#define FW_VERSION "TermoSystem v1.2.1"
 +
 +// =============================
 +//  PIN DEFINITIONS
@@ -231,6 +231,61 @@ index 0000000000000000000000000000000000000000..ebf17715863e2ef5252dce024a5306ad
 +PubSubClient mqttClient(mqttNetClient);
 +unsigned long lastMqttPublishMs = 0;
 +const unsigned long MQTT_PUBLISH_INTERVAL_MS = 10000;
++
++// =============================
++//  STATISTICHE GIORNALIERE
++// =============================
++
++unsigned long dailyPumpOnMs = 0;
++int dailyLowTempEvents = 0;
++float dailyMinP1 = NAN;
++float dailyMaxP1 = NAN;
++int dailyStamp = -1;
++bool lowTempState = false;
++unsigned long lastMetricsMs = 0;
++
++int getDayStamp() {
++  struct tm info;
++  if (getLocalTimeSafe(&info)) {
++    return (info.tm_year * 1000) + info.tm_yday;
++  }
++  return (int)(millis() / 86400000UL);
++}
++
++void updateDailyMetrics() {
++  unsigned long now = millis();
++  int stamp = getDayStamp();
++  if (dailyStamp == -1) dailyStamp = stamp;
++  if (stamp != dailyStamp) {
++    dailyStamp = stamp;
++    dailyPumpOnMs = 0;
++    dailyLowTempEvents = 0;
++    dailyMinP1 = NAN;
++    dailyMaxP1 = NAN;
++    lowTempState = false;
++  }
++
++  if (lastMetricsMs == 0) lastMetricsMs = now;
++  unsigned long delta = now - lastMetricsMs;
++  lastMetricsMs = now;
++  if (pumpRelayState) {
++    dailyPumpOnMs += delta;
++  }
++
++  if (!isnan(puffer1.tMax)) {
++    if (isnan(dailyMinP1) || puffer1.tMax < dailyMinP1) dailyMinP1 = puffer1.tMax;
++    if (isnan(dailyMaxP1) || puffer1.tMax > dailyMaxP1) dailyMaxP1 = puffer1.tMax;
++  }
++
++  float threshold = pumpSetTemp - PUMP_HYST;
++  if (!isnan(puffer1.tMax)) {
++    bool below = puffer1.tMax < threshold;
++    if (below && !lowTempState) {
++      dailyLowTempEvents++;
++    }
++    lowTempState = below;
++  }
++}
 +
 +// =============================
 +//  OTA UPDATE
@@ -906,7 +961,7 @@ index 0000000000000000000000000000000000000000..ebf17715863e2ef5252dce024a5306ad
 +  }
 +}
 +// =========================================================
-+//  TermoSystem - v1.2 Final
++//  TermoSystem - v1.2.1
 +//  BLOCCO 2: setup() + startup stile Linux + animazione logo
 +// =========================================================
 +
@@ -1199,7 +1254,7 @@ index 0000000000000000000000000000000000000000..ebf17715863e2ef5252dce024a5306ad
 +  uiState = UI_DASHBOARD;
 +}
 +// =========================================================
-+//  TermoSystem - v1.2 Final
++//  TermoSystem - v1.2.1
 +//  BLOCCO 3: Top bar + Dashboard + Temi
 +// =========================================================
 +
@@ -1754,7 +1809,7 @@ index 0000000000000000000000000000000000000000..ebf17715863e2ef5252dce024a5306ad
 +  }
 +}
 +// =========================================================
-+//  TermoSystem - v1.2 Final
++//  TermoSystem - v1.2.1
 +//  BLOCCO 4: Menu + schermate impostazioni + handler UI
 +// =========================================================
 +
@@ -3025,7 +3080,7 @@ index 0000000000000000000000000000000000000000..ebf17715863e2ef5252dce024a5306ad
 +  oled.clearBuffer();
 +  oled.setFont(u8g2_font_5x8_tr);
 +
-+  oled.drawStr(0, 10, "TermoSystem v1.2");
++  oled.drawStr(0, 10, "TermoSystem v1.2.1");
 +
 +  char buf[32];
 +  formatUptimeShort(buf, sizeof(buf));
@@ -3112,7 +3167,7 @@ index 0000000000000000000000000000000000000000..ebf17715863e2ef5252dce024a5306ad
 +  }
 +}
 +// =========================================================
-+//  TermoSystem - v1.2 Final
++//  TermoSystem - v1.2.1
 +//  BLOCCO 6: Logica pompa (isteresi) + LOOP principale
 +// =========================================================
 +
@@ -3273,7 +3328,7 @@ index 0000000000000000000000000000000000000000..ebf17715863e2ef5252dce024a5306ad
 +  delay(80);
 +}
 +// =========================================================
-+//  TermoSystem - v1.2 Final
++//  TermoSystem - v1.2.1
 +//  BLOCCO 7: Storico, API avanzate, WebApp animata
 +// =========================================================
 +
@@ -3291,60 +3346,6 @@ index 0000000000000000000000000000000000000000..ebf17715863e2ef5252dce024a5306ad
 +unsigned long lastHistSampleMs = 0;
 +const unsigned long HIST_INTERVAL_MS = 60000;   // 1 minuto
 +
-+// =============================
-+//  STATISTICHE GIORNALIERE
-+// =============================
-+
-+unsigned long dailyPumpOnMs = 0;
-+int dailyLowTempEvents = 0;
-+float dailyMinP1 = NAN;
-+float dailyMaxP1 = NAN;
-+int dailyStamp = -1;
-+bool lowTempState = false;
-+unsigned long lastMetricsMs = 0;
-+
-+int getDayStamp() {
-+  struct tm info;
-+  if (getLocalTimeSafe(&info)) {
-+    return (info.tm_year * 1000) + info.tm_yday;
-+  }
-+  return (int)(millis() / 86400000UL);
-+}
-+
-+void updateDailyMetrics() {
-+  unsigned long now = millis();
-+  int stamp = getDayStamp();
-+  if (dailyStamp == -1) dailyStamp = stamp;
-+  if (stamp != dailyStamp) {
-+    dailyStamp = stamp;
-+    dailyPumpOnMs = 0;
-+    dailyLowTempEvents = 0;
-+    dailyMinP1 = NAN;
-+    dailyMaxP1 = NAN;
-+    lowTempState = false;
-+  }
-+
-+  if (lastMetricsMs == 0) lastMetricsMs = now;
-+  unsigned long delta = now - lastMetricsMs;
-+  lastMetricsMs = now;
-+  if (pumpRelayState) {
-+    dailyPumpOnMs += delta;
-+  }
-+
-+  if (!isnan(puffer1.tMax)) {
-+    if (isnan(dailyMinP1) || puffer1.tMax < dailyMinP1) dailyMinP1 = puffer1.tMax;
-+    if (isnan(dailyMaxP1) || puffer1.tMax > dailyMaxP1) dailyMaxP1 = puffer1.tMax;
-+  }
-+
-+  float threshold = pumpSetTemp - PUMP_HYST;
-+  if (!isnan(puffer1.tMax)) {
-+    bool below = puffer1.tMax < threshold;
-+    if (below && !lowTempState) {
-+      dailyLowTempEvents++;
-+    }
-+    lowTempState = below;
-+  }
-+}
 +
 +void addHistorySample() {
 +  unsigned long now = millis();
