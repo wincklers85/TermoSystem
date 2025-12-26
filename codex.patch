@@ -1,11 +1,11 @@
 diff --git a/Build1.1Beta/TermoSystem v1.1Beta.ino b/Build1.1Beta/TermoSystem v1.1Beta.ino
 new file mode 100644
-index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f46c010e7c
+index 0000000000000000000000000000000000000000..bd4f4dd6fd80a9d296617a77f2ecc8f4ea47943c
 --- /dev/null
 +++ b/Build1.1Beta/TermoSystem v1.1Beta.ino	
-@@ -0,0 +1,4764 @@
+@@ -0,0 +1,5349 @@
 +// =========================================================
-+//  TermoSystem - v1.2.2
++//  TermoSystem - v1.2.3
 +//  BLOCCO 1: Config & Funzioni di base
 +// =========================================================
 +
@@ -15,8 +15,11 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +#include <ESP8266WiFi.h>
 +#include <ESP8266WebServer.h>
 +#include <ESP8266httpUpdate.h>
++#include <ESP8266mDNS.h>
++#include <ESP8266HTTPClient.h>
 +#include <EEPROM.h>
 +#include <PubSubClient.h>
++#include <Updater.h>
 +#include <math.h>
 +#include <time.h>
 +#include <WiFiClientSecure.h>
@@ -33,13 +36,17 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +void handleApiSettingsGet();
 +void handleApiSettingsPost();
 +void handleApiHistory();
++void handleApiConfigGet();
++void handleApiConfigPost();
++void handleOtaUpload();
++void handleApiOtaRequest();
 +void handleApp();
 +void setupWebServerRoutes();
 +
 +// =============================
 +//  VERSIONE
 +// =============================
-+#define FW_VERSION "TermoSystem v1.2.2"
++#define FW_VERSION "TermoSystem v1.2.3"
 +
 +// =============================
 +//  PIN DEFINITIONS
@@ -86,7 +93,7 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +//  EEPROM LAYOUT
 +// =============================
 +
-+const int EEPROM_SIZE             = 256;
++const int EEPROM_SIZE             = 512;
 +
 +const byte EEPROM_MAGIC_WIFI      = 0x42;
 +const byte EEPROM_MAGIC_DISPLAY   = 0x99;
@@ -118,6 +125,9 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +const int EEPROM_ADDR_GLOBAL_LANG      = 146; // uint8_t (0=IT,1=EN)
 +const int EEPROM_ADDR_GLOBAL_SCREENSAVER = 147; // uint8_t (0=NONE,1=ANIM,2=OFF)
 +const int EEPROM_ADDR_GLOBAL_SENSE_EN  = 150; // 4 bits per sonde attive
++const int EEPROM_ADDR_OTA_URL          = 160; // 120 bytes
++const int EEPROM_ADDR_NAS_URL          = 280; // 120 bytes
++const int EEPROM_ADDR_TEMP_OFFSETS     = 420; // 4 floats (16 bytes)
 +
 +// =============================
 +//  MODALITÀ & UI
@@ -223,8 +233,8 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +
 +const char* MQTT_HOST  = ""; // es: "192.168.1.10"
 +const uint16_t MQTT_PORT = 1883;
-+const char* MQTT_USER  = "";
-+const char* MQTT_PASS  = "";
++const char* MQTT_USER  = "Admin";
++const char* MQTT_PASS  = "Password";
 +const char* MQTT_TOPIC = "termosystem/status";
 +
 +WiFiClient mqttNetClient;
@@ -233,11 +243,56 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +const unsigned long MQTT_PUBLISH_INTERVAL_MS = 10000;
 +
 +// =============================
++//  OTA / NAS / CALIBRAZIONI
++// =============================
++
++char otaUrl[121] = "https://raw.githubusercontent.com/USER/REPO/main/OTA/LiveUpdate.bin";
++char nasUrl[121] = "";
++float tempOffsets[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
++bool nasReachable = true;
++unsigned long lastNasCheckMs = 0;
++
++// =============================
++//  CONFIGURAZIONE IMPIANTO (Wizard)
++// =============================
++
++enum BoilerType : uint8_t {
++  BOILER_GAS = 0,
++  BOILER_GASOLIO,
++  BOILER_LEGNA,
++  BOILER_PELLET,
++  BOILER_IBRIDA
++};
++
++struct PlantConfig {
++  uint8_t pufferTechCount;
++  uint8_t pufferSanCount;
++  float   pufferVolumeL;
++  uint16_t radiators;
++  uint8_t thermostatType;
++  BoilerType boilerType;
++  uint8_t zoneValves;
++  uint8_t zones;
++  uint8_t pumps;
++  uint8_t thermocouples;
++  float   boilerKw;
++  float   pelletKg;
++  float   woodVolume;
++  char    pelletModel[24];
++  bool    pelletRemote;
++  float   pufferMaxTemp;
++  bool    openVessel;
++  float   houseArea;
++  uint8_t houseFloors;
++};
++
++PlantConfig plantConfig = {};
++bool plantConfigSet = false;
++
++// =============================
 +//  OTA UPDATE
 +// =============================
 +
-+// Imposta l'URL RAW del tuo repo GitHub al file OTA/LiveUpdate.bin
-+const char* OTA_FIRMWARE_URL = "https://raw.githubusercontent.com/USER/REPO/main/OTA/LiveUpdate.bin";
 +bool otaStartRequested = false;
 +bool otaInProgress = false;
 +int  otaProgress = -1;
@@ -819,11 +874,80 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +  EEPROM.commit();
 +}
 +
++void loadExtraConfig() {
++  for (int i = 0; i < 120; i++) {
++    otaUrl[i] = EEPROM.read(EEPROM_ADDR_OTA_URL + i);
++    nasUrl[i] = EEPROM.read(EEPROM_ADDR_NAS_URL + i);
++  }
++  otaUrl[120] = '\0';
++  nasUrl[120] = '\0';
++  if (otaUrl[0] == 0xFF || otaUrl[0] == '\0') {
++    strncpy(otaUrl, "https://raw.githubusercontent.com/USER/REPO/main/OTA/LiveUpdate.bin", sizeof(otaUrl) - 1);
++    otaUrl[120] = '\0';
++  }
++  if (nasUrl[0] == 0xFF) {
++    nasUrl[0] = '\0';
++  }
++
++  union { float f; uint8_t b[4]; } u;
++  for (int s = 0; s < 4; s++) {
++    for (int i = 0; i < 4; i++) {
++      u.b[i] = EEPROM.read(EEPROM_ADDR_TEMP_OFFSETS + s * 4 + i);
++    }
++    if (isnan(u.f) || u.f < -9.0f || u.f > 9.0f) {
++      tempOffsets[s] = 0.0f;
++    } else {
++      tempOffsets[s] = u.f;
++    }
++  }
++}
++
++void saveExtraConfig() {
++  for (int i = 0; i < 120; i++) {
++    EEPROM.write(EEPROM_ADDR_OTA_URL + i, otaUrl[i]);
++    EEPROM.write(EEPROM_ADDR_NAS_URL + i, nasUrl[i]);
++  }
++  union { float f; uint8_t b[4]; } u;
++  for (int s = 0; s < 4; s++) {
++    u.f = tempOffsets[s];
++    for (int i = 0; i < 4; i++) {
++      EEPROM.write(EEPROM_ADDR_TEMP_OFFSETS + s * 4 + i, u.b[i]);
++    }
++  }
++  EEPROM.commit();
++}
++
++bool checkNasReachable() {
++  if (nasUrl[0] == '\0') {
++    return false;
++  }
++  HTTPClient http;
++  WiFiClient client;
++  String url = String(nasUrl);
++  if (!url.startsWith("http")) {
++    url = String("http://") + url;
++  }
++  http.setTimeout(2000);
++  if (!http.begin(client, url)) {
++    return false;
++  }
++  int code = http.GET();
++  http.end();
++  return code > 0 && code < 500;
++}
++
 +void resetFactoryDefaults() {
 +  EEPROM.write(EEPROM_ADDR_WIFI_MAGIC,    0x00);
 +  EEPROM.write(EEPROM_ADDR_DISP_MAGIC,    0x00);
 +  EEPROM.write(EEPROM_ADDR_PUMP_MAGIC,    0x00);
 +  EEPROM.write(EEPROM_ADDR_GLOBAL_MAGIC,  0x00);
++  for (int i = 0; i < 120; i++) {
++    EEPROM.write(EEPROM_ADDR_OTA_URL + i, 0x00);
++    EEPROM.write(EEPROM_ADDR_NAS_URL + i, 0x00);
++  }
++  for (int i = 0; i < 16; i++) {
++    EEPROM.write(EEPROM_ADDR_TEMP_OFFSETS + i, 0x00);
++  }
 +  EEPROM.commit();
 +}
 +
@@ -868,7 +992,7 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +  if (sonde[SONDA_P1_MAX].enabled) {
 +    float t = readNtcTempOnA0();
 +    if (!isnan(t) && t > -20 && t < 120) {
-+      sonde[SONDA_P1_MAX].tempC = t;
++      sonde[SONDA_P1_MAX].tempC = t + tempOffsets[SONDA_P1_MAX];
 +      sonde[SONDA_P1_MAX].ok    = true;
 +      stSonde[SONDA_P1_MAX].ok  = true;
 +    } else {
@@ -961,7 +1085,7 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +  }
 +}
 +// =========================================================
-+//  TermoSystem - v1.2.2
++//  TermoSystem - v1.2.3
 +//  BLOCCO 2: setup() + startup stile Linux + animazione logo
 +// =========================================================
 +
@@ -1200,6 +1324,7 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +  loadDisplayConfig();
 +  loadPumpConfig();
 +  loadGlobalConfig();
++  loadExtraConfig();
 +
 +  // --- Display principale ---
 +  mainDisp.setI2CAddress(0x3F << 1);   // indirizzo tipico
@@ -1218,6 +1343,10 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +    connectToWifi();
 +  }
 +  setupMqtt();
++  if (wifiConnected) {
++    MDNS.begin("termosystem");
++    MDNS.addService("http", "tcp", 80);
++  }
 +
 +  // --- Orario / NTP ---
 +  setupTimeConfig();
@@ -1254,7 +1383,7 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +  uiState = UI_DASHBOARD;
 +}
 +// =========================================================
-+//  TermoSystem - v1.2.2
++//  TermoSystem - v1.2.3
 +//  BLOCCO 3: Top bar + Dashboard + Temi
 +// =========================================================
 +
@@ -1809,7 +1938,7 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +  }
 +}
 +// =========================================================
-+//  TermoSystem - v1.2.2
++//  TermoSystem - v1.2.3
 +//  BLOCCO 4: Menu + schermate impostazioni + handler UI
 +// =========================================================
 +
@@ -2690,7 +2819,7 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +    }
 +  });
 +
-+  t_httpUpdate_return ret = ESPhttpUpdate.update(client, OTA_FIRMWARE_URL);
++  t_httpUpdate_return ret = ESPhttpUpdate.update(client, otaUrl);
 +  if (ret == HTTP_UPDATE_OK) {
 +    drawOtaUpdateScreen(tr("Update OK - Riavvio", "Update OK - Reboot"));
 +    delay(800);
@@ -3080,7 +3209,7 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +  oled.clearBuffer();
 +  oled.setFont(u8g2_font_5x8_tr);
 +
-+  oled.drawStr(0, 10, "TermoSystem v1.2.2");
++  oled.drawStr(0, 10, "TermoSystem v1.2.3");
 +
 +  char buf[32];
 +  formatUptimeShort(buf, sizeof(buf));
@@ -3167,7 +3296,7 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +  }
 +}
 +// =========================================================
-+//  TermoSystem - v1.2.2
++//  TermoSystem - v1.2.3
 +//  BLOCCO 6: Logica pompa (isteresi) + LOOP principale
 +// =========================================================
 +
@@ -3213,6 +3342,9 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +void loop() {
 +  // Gestione richieste HTTP (WebApp / API)
 +  server.handleClient();
++  if (wifiConnected) {
++    MDNS.update();
++  }
 +
 +  // Aggiorna sensori (tutte e 4 le sonde, hopper, ecc.)
 +  updateSensors();
@@ -3222,6 +3354,14 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +  addHistorySample();
 +  updateDailyMetrics();
 +  updateMqtt();
++
++  if (wifiConnected) {
++    unsigned long now = millis();
++    if (now - lastNasCheckMs > 60000) {
++      lastNasCheckMs = now;
++      nasReachable = checkNasReachable();
++    }
++  }
 +
 +
 +  // OLED: se siamo in modalità diagnosi (OK tenuto premuto all'avvio)
@@ -3328,7 +3468,7 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +  delay(80);
 +}
 +// =========================================================
-+//  TermoSystem - v1.2.2
++//  TermoSystem - v1.2.3
 +//  BLOCCO 7: Storico, API avanzate, WebApp animata
 +// =========================================================
 +
@@ -3438,6 +3578,9 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +    json += "\"ip\":\"\",";
 +  }
 +
++  json += "\"nasUrl\":\"" + String(nasUrl) + "\",";
++  json += "\"nasReachable\":" + String(nasReachable ? "true" : "false") + ",";
++
 +  // Tempo & tema
 +  json += "\"uptimeSec\":" + String(millis() / 1000) + ",";
 +  json += "\"clockUseNtp\":" + String(clockUseNtp ? "true" : "false") + ",";
@@ -3480,7 +3623,13 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +  json += "\"clockIs24h\":"  + String(clockIs24h ? "true" : "false") + ",";
 +  json += "\"clockTzIndex\":" + String(clockTzIndex) + ",";
 +
-+  json += "\"theme\":" + String((int)currentTheme);
++  json += "\"theme\":" + String((int)currentTheme) + ",";
++  json += "\"otaUrl\":\"" + String(otaUrl) + "\",";
++  json += "\"nasUrl\":\"" + String(nasUrl) + "\",";
++  json += "\"tempOffset1\":" + String(tempOffsets[0], 1) + ",";
++  json += "\"tempOffset2\":" + String(tempOffsets[1], 1) + ",";
++  json += "\"tempOffset3\":" + String(tempOffsets[2], 1) + ",";
++  json += "\"tempOffset4\":" + String(tempOffsets[3], 1);
 +
 +  json += "}";
 +  server.send(200, "application/json", json);
@@ -3586,13 +3735,111 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +    currentTheme = (ThemeId)t;
 +  }
 +
++  if (server.hasArg("otaUrl")) {
++    String v = server.arg("otaUrl");
++    v.trim();
++    v.toCharArray(otaUrl, sizeof(otaUrl));
++  }
++
++  if (server.hasArg("nasUrl")) {
++    String v = server.arg("nasUrl");
++    v.trim();
++    v.toCharArray(nasUrl, sizeof(nasUrl));
++  }
++
++  if (server.hasArg("tempOffset1")) tempOffsets[0] = server.arg("tempOffset1").toFloat();
++  if (server.hasArg("tempOffset2")) tempOffsets[1] = server.arg("tempOffset2").toFloat();
++  if (server.hasArg("tempOffset3")) tempOffsets[2] = server.arg("tempOffset3").toFloat();
++  if (server.hasArg("tempOffset4")) tempOffsets[3] = server.arg("tempOffset4").toFloat();
++
++  for (int i = 0; i < 4; i++) {
++    if (tempOffsets[i] > 9.0f) tempOffsets[i] = 9.0f;
++    if (tempOffsets[i] < -9.0f) tempOffsets[i] = -9.0f;
++  }
++
 +  // Salva configurazione globale (display, orologio, tema, puffer/sonde/AUX)
 +  saveGlobalConfig();
 +  // Config pompa
 +  savePumpConfig();
++  saveExtraConfig();
 +
 +  // Ritorna settaggi aggiornati
 +  handleApiSettingsGet();
++}
++
++// =============================
++//  API /api/config (wizard impianto)
++// =============================
++
++void handleApiConfigGet() {
++  String json = "{";
++  json += "\"configured\":" + String(plantConfigSet ? "true" : "false") + ",";
++  json += "\"pufferTechCount\":" + String(plantConfig.pufferTechCount) + ",";
++  json += "\"pufferSanCount\":" + String(plantConfig.pufferSanCount) + ",";
++  json += "\"pufferVolumeL\":" + String(plantConfig.pufferVolumeL, 1) + ",";
++  json += "\"radiators\":" + String(plantConfig.radiators) + ",";
++  json += "\"thermostatType\":" + String(plantConfig.thermostatType) + ",";
++  json += "\"boilerType\":" + String((int)plantConfig.boilerType) + ",";
++  json += "\"zoneValves\":" + String(plantConfig.zoneValves) + ",";
++  json += "\"zones\":" + String(plantConfig.zones) + ",";
++  json += "\"pumps\":" + String(plantConfig.pumps) + ",";
++  json += "\"thermocouples\":" + String(plantConfig.thermocouples) + ",";
++  json += "\"boilerKw\":" + String(plantConfig.boilerKw, 1) + ",";
++  json += "\"pelletKg\":" + String(plantConfig.pelletKg, 1) + ",";
++  json += "\"woodVolume\":" + String(plantConfig.woodVolume, 1) + ",";
++  json += "\"pelletModel\":\"" + String(plantConfig.pelletModel) + "\",";
++  json += "\"pelletRemote\":" + String(plantConfig.pelletRemote ? "true" : "false") + ",";
++  json += "\"pufferMaxTemp\":" + String(plantConfig.pufferMaxTemp, 1) + ",";
++  json += "\"openVessel\":" + String(plantConfig.openVessel ? "true" : "false") + ",";
++  json += "\"houseArea\":" + String(plantConfig.houseArea, 1) + ",";
++  json += "\"houseFloors\":" + String(plantConfig.houseFloors);
++  json += "}";
++  server.send(200, "application/json", json);
++}
++
++void handleApiConfigPost() {
++  if (server.method() != HTTP_POST) {
++    server.send(405, "text/plain", "Metodo non valido");
++    return;
++  }
++
++  plantConfig.pufferTechCount = server.arg("pufferTechCount").toInt();
++  plantConfig.pufferSanCount = server.arg("pufferSanCount").toInt();
++  plantConfig.pufferVolumeL = server.arg("pufferVolumeL").toFloat();
++  plantConfig.radiators = server.arg("radiators").toInt();
++  plantConfig.thermostatType = server.arg("thermostatType").toInt();
++  plantConfig.boilerType = (BoilerType)server.arg("boilerType").toInt();
++  plantConfig.zoneValves = server.arg("zoneValves").toInt();
++  plantConfig.zones = server.arg("zones").toInt();
++  plantConfig.pumps = server.arg("pumps").toInt();
++  plantConfig.thermocouples = server.arg("thermocouples").toInt();
++  plantConfig.boilerKw = server.arg("boilerKw").toFloat();
++  plantConfig.pelletKg = server.arg("pelletKg").toFloat();
++  plantConfig.woodVolume = server.arg("woodVolume").toFloat();
++  String model = server.arg("pelletModel");
++  model.toCharArray(plantConfig.pelletModel, sizeof(plantConfig.pelletModel));
++  plantConfig.pelletRemote = (server.arg("pelletRemote") == "1");
++  plantConfig.pufferMaxTemp = server.arg("pufferMaxTemp").toFloat();
++  plantConfig.openVessel = (server.arg("openVessel") == "1");
++  plantConfig.houseArea = server.arg("houseArea").toFloat();
++  plantConfig.houseFloors = server.arg("houseFloors").toInt();
++
++  plantConfigSet = true;
++
++  // Risposta con suggerimenti semplici
++  float heatDemandKw = (plantConfig.houseArea * 50.0f) / 1000.0f;
++  float recommendedKw = heatDemandKw * 1.2f;
++  String json = "{";
++  json += "\"heatDemandKw\":" + String(heatDemandKw, 1) + ",";
++  json += "\"recommendedKw\":" + String(recommendedKw, 1) + ",";
++  json += "\"message\":\"";
++  if (plantConfig.boilerKw > 0 && plantConfig.boilerKw < recommendedKw) {
++    json += "Potenza caldaia sotto il fabbisogno stimato.";
++  } else {
++    json += "Configurazione registrata. Bilanciamento consigliato.";
++  }
++  json += "\"}";
++  server.send(200, "application/json", json);
 +}
 +
 +// =============================
@@ -3634,6 +3881,23 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +  server.send(200, "application/json", json);
 +}
 +
++void handleOtaUpload() {
++  HTTPUpload& upload = server.upload();
++  if (upload.status == UPLOAD_FILE_START) {
++    WiFiUDP::stopAll();
++    Update.begin(UPDATE_SIZE_UNKNOWN);
++  } else if (upload.status == UPLOAD_FILE_WRITE) {
++    Update.write(upload.buf, upload.currentSize);
++  } else if (upload.status == UPLOAD_FILE_END) {
++    Update.end(true);
++  }
++}
++
++void handleApiOtaRequest() {
++  otaStartRequested = true;
++  server.send(200, "application/json", "{\"ok\":true}");
++}
++
 +// =============================
 +//  WEBAPP HTML ANIMATA
 +// =============================
@@ -3663,6 +3927,14 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +  background:var(--bg);
 +  color:var(--text);
 +}
++.error-bar{
++  display:none;
++  background:#7a1f1f;
++  color:#fff;
++  padding:6px 12px;
++  font-size:0.85rem;
++}
++.error-bar.show{ display:block; }
 +header{
 +  position:sticky;
 +  top:0;
@@ -3674,6 +3946,67 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +  background:rgba(0,0,0,0.92);
 +  border-bottom:1px solid #222;
 +}
++.burger{
++  width:32px;
++  height:32px;
++  border-radius:8px;
++  background:#1f1f1f;
++  display:flex;
++  align-items:center;
++  justify-content:center;
++  cursor:pointer;
++}
++.burger span{
++  display:block;
++  width:16px;
++  height:2px;
++  background:#ddd;
++  position:relative;
++}
++.burger span::before,
++.burger span::after{
++  content:"";
++  position:absolute;
++  width:16px;
++  height:2px;
++  background:#ddd;
++  left:0;
++}
++.burger span::before{ top:-5px; }
++.burger span::after{ top:5px; }
++.sidebar{
++  position:fixed;
++  top:0;
++  left:-240px;
++  width:220px;
++  height:100%;
++  background:#111;
++  border-right:1px solid #222;
++  padding:18px 12px;
++  transition:left 0.25s ease;
++  z-index:20;
++}
++.sidebar.open{ left:0; }
++.sidebar .nav-title{
++  font-size:0.85rem;
++  color:#aaa;
++  margin-bottom:10px;
++}
++.sidebar button{
++  width:100%;
++  margin:6px 0;
++  background:#1c1c1c;
++  color:#eee;
++  text-align:left;
++}
++.backdrop{
++  position:fixed;
++  inset:0;
++  background:rgba(0,0,0,0.4);
++  display:none;
++  z-index:15;
++}
++.backdrop.show{ display:block; }
 +.logo{
 +  font-weight:700;
 +  font-size:1.1rem;
@@ -3697,6 +4030,8 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +  margin-bottom:10px;
 +  box-shadow:0 0 12px rgba(0,0,0,0.65);
 +}
++.section{ display:none; }
++.section.active{ display:block; }
 +.card h2{
 +  margin:0 0 8px;
 +  font-size:1rem;
@@ -3959,10 +4294,22 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +</head>
 +<body class="theme-classic">
 +<header>
++  <div class="burger" id="btnBurger"><span></span></div>
 +  <div class="logo">Termo<span>System</span> Web</div>
 +  <div id="fwBadge"></div>
 +</header>
++<div class="error-bar" id="errorBar"></div>
++<div class="sidebar" id="sidebar">
++  <div class="nav-title">Menu</div>
++  <button data-section="dashboard">Dashboard</button>
++  <button data-section="impianto">Impianto</button>
++  <button data-section="settings">Impostazioni</button>
++  <button data-section="remoto">Remoto</button>
++  <button data-section="storico">Storico</button>
++</div>
++<div class="backdrop" id="backdrop"></div>
 +<main>
++  <div class="section active" data-section="dashboard">
 +  <!-- Schema animato impianto -->
 +  <section class="card">
 +    <h2>
@@ -4048,15 +4395,26 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +      </div>
 +    </div>
 +  </section>
++  </div>
++
++  <div class="section" data-section="impianto">
++    <section class="card">
++      <h2>Configurazione impianto</h2>
++      <div class="small">Avvia la procedura guidata per configurare l'impianto.</div>
++      <button id="btnWizard">Configura impianto</button>
++      <div class="small" id="wizardResult"></div>
++    </section>
++  </div>
 +
 +  <!-- Accesso remoto -->
++  <div class="section" data-section="remoto">
 +  <section class="card">
 +    <h2>Accesso remoto</h2>
 +    <div class="row">
 +      <div class="tile">
 +        <div class="label">IP locale</div>
 +        <div class="value" id="valRemoteIp">--</div>
-+        <div class="small">Usa port forwarding sul router per l'accesso remoto.</div>
++        <div class="small">Usa port forwarding sul router per l'accesso remoto. DNS locale: termosystem.local</div>
 +      </div>
 +      <div class="tile">
 +        <div class="label">MQTT (widget)</div>
@@ -4065,8 +4423,10 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +      </div>
 +    </div>
 +  </section>
++  </div>
 +
 +  <!-- Controllo pompa e display -->
++  <div class="section" data-section="settings">
 +  <section class="card">
 +    <h2>Controllo pompa & display</h2>
 +    <div class="row">
@@ -4151,6 +4511,52 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +    </div>
 +  </section>
 +
++  <section class="card">
++    <h2>Aggiornamenti & NAS</h2>
++    <div class="row">
++      <div class="tile">
++        <div class="label">Server OTA (URL)</div>
++        <input type="text" id="otaUrl" placeholder="https://.../LiveUpdate.bin">
++        <div class="small">URL RAW del firmware.</div>
++        <button id="btnOtaNow">Richiedi aggiornamento</button>
++      </div>
++      <div class="tile">
++        <div class="label">Aggiornamento da PC</div>
++        <input type="file" id="otaFile">
++        <button id="btnUploadOta">Carica firmware</button>
++        <div class="small" id="otaUploadStatus"></div>
++      </div>
++      <div class="tile">
++        <div class="label">NAS / Server storico (URL)</div>
++        <input type="text" id="nasUrl" placeholder="http://nas.local:8080/termo">
++        <div class="small">Percorso per salvare e leggere gli storici.</div>
++      </div>
++    </div>
++  </section>
++
++  <section class="card">
++    <h2>Calibrazione temperature</h2>
++    <div class="row">
++      <div class="tile">
++        <div class="label">Sonda P1 MAX</div>
++        <input type="number" step="0.5" min="-9" max="9" id="calS1">
++      </div>
++      <div class="tile">
++        <div class="label">Sonda P1 MIN</div>
++        <input type="number" step="0.5" min="-9" max="9" id="calS2">
++      </div>
++      <div class="tile">
++        <div class="label">Sonda P2 MAX</div>
++        <input type="number" step="0.5" min="-9" max="9" id="calS3">
++      </div>
++      <div class="tile">
++        <div class="label">Sonda P2 MIN</div>
++        <input type="number" step="0.5" min="-9" max="9" id="calS4">
++      </div>
++    </div>
++    <div class="small">Correzione in °C (step 0.5, range ±9).</div>
++  </section>
++
 +  <!-- Stato di sistema -->
 +  <section class="card">
 +    <h2>Stato di sistema</h2>
@@ -4169,8 +4575,10 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +      </div>
 +    </div>
 +  </section>
++  </div>
 +
 +  <!-- Grafico storico -->
++  <div class="section" data-section="storico">
 +  <section class="card">
 +    <h2>Storico temperature</h2>
 +    <canvas id="histCanvas"></canvas>
@@ -4178,15 +4586,82 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +      Puffer 1 (linea principale), Puffer 2, e barre in basso quando la pompa è ON.
 +    </div>
 +  </section>
++  </div>
 +
 +  <section class="card small">
 +    <a href="/" style="color:var(--accent);text-decoration:none;">&larr; Torna alla pagina principale</a>
 +  </section>
 +</main>
 +
++<div class="backdrop" id="wizardBackdrop"></div>
++<div class="card" id="wizardModal" style="position:fixed;inset:10% 8%;display:none;z-index:30;">
++  <h2>Wizard impianto</h2>
++  <div class="row">
++    <div class="tile"><div class="label">Puffer tecnici</div><input type="number" id="wPufferTech" min="0" max="4"></div>
++    <div class="tile"><div class="label">Puffer sanitari</div><input type="number" id="wPufferSan" min="0" max="4"></div>
++    <div class="tile"><div class="label">Volume puffer (L)</div><input type="number" id="wPufferVol" min="0"></div>
++    <div class="tile"><div class="label">Termosifoni</div><input type="number" id="wRadiators" min="0"></div>
++    <div class="tile"><div class="label">Tipo termostato</div>
++      <select id="wThermostat">
++        <option value="0">On/Off</option>
++        <option value="1">Modulante</option>
++        <option value="2">Smart</option>
++      </select>
++    </div>
++    <div class="tile"><div class="label">Tipo caldaia</div>
++      <select id="wBoiler">
++        <option value="0">Gas</option>
++        <option value="1">Gasolio</option>
++        <option value="2">Legna</option>
++        <option value="3">Pellet</option>
++        <option value="4">Ibrida</option>
++      </select>
++    </div>
++    <div class="tile"><div class="label">Valvole di zona</div><input type="number" id="wZoneValves" min="0"></div>
++    <div class="tile"><div class="label">Numero zone</div><input type="number" id="wZones" min="1"></div>
++    <div class="tile"><div class="label">Numero pompe</div><input type="number" id="wPumps" min="0"></div>
++    <div class="tile"><div class="label">Numero termocoppie</div><input type="number" id="wThermocouples" min="0"></div>
++    <div class="tile"><div class="label">kW caldaia</div><input type="number" id="wBoilerKw" min="0" step="0.5"></div>
++    <div class="tile"><div class="label">Pellet (kg)</div><input type="number" id="wPelletKg" min="0" step="0.5"></div>
++    <div class="tile"><div class="label">Modello pellet</div><input type="text" id="wPelletModel"></div>
++    <div class="tile"><div class="label">Pellet remoto</div><select id="wPelletRemote"><option value="0">No</option><option value="1">Sì</option></select></div>
++    <div class="tile"><div class="label">Legna (m³)</div><input type="number" id="wWoodVol" min="0" step="0.1"></div>
++    <div class="tile"><div class="label">Max puffer (°C)</div><input type="number" id="wPufferMax" min="30" max="95" step="0.5"></div>
++    <div class="tile"><div class="label">Vaso</div><select id="wVessel"><option value="0">Chiuso</option><option value="1">Aperto</option></select></div>
++    <div class="tile"><div class="label">Metratura casa (m²)</div><input type="number" id="wArea" min="20"></div>
++    <div class="tile"><div class="label">Piani</div><input type="number" id="wFloors" min="1"></div>
++  </div>
++  <div style="margin-top:10px;">
++    <button id="btnWizardSave">Salva</button>
++    <button id="btnWizardClose">Chiudi</button>
++  </div>
++</div>
++
 +<script>
 +let statusData = null;
 +let lastHistory = [];
++
++// Sidebar navigation
++const sidebar = document.getElementById('sidebar');
++const backdrop = document.getElementById('backdrop');
++document.getElementById('btnBurger').addEventListener('click', ()=>{
++  sidebar.classList.add('open');
++  backdrop.classList.add('show');
++});
++backdrop.addEventListener('click', ()=>{
++  sidebar.classList.remove('open');
++  backdrop.classList.remove('show');
++});
++document.querySelectorAll('.sidebar button').forEach(btn=>{
++  btn.addEventListener('click', ()=>{
++    const target = btn.getAttribute('data-section');
++    document.querySelectorAll('.section').forEach(sec=>{
++      sec.classList.toggle('active', sec.getAttribute('data-section') === target);
++    });
++    sidebar.classList.remove('open');
++    backdrop.classList.remove('show');
++  });
++});
 +
 +// Mappa indice tema firmware -> classe body
 +function applyWebTheme(themeIndex){
@@ -4312,6 +4787,18 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +  }else{
 +    wifiEl.innerHTML = '<span class="status-dot err"></span>Offline';
 +    ipEl.textContent = "";
++  }
++
++  const errorBar = document.getElementById('errorBar');
++  const errors = [];
++  if(s.nasUrl && s.nasUrl.length > 0 && !s.nasReachable){
++    errors.push("NAS/Server storico non raggiungibile");
++  }
++  if(errors.length){
++    errorBar.textContent = errors.join(" • ");
++    errorBar.classList.add("show");
++  }else{
++    errorBar.classList.remove("show");
 +  }
 +
 +  const remoteIp = document.getElementById('valRemoteIp');
@@ -4520,6 +5007,17 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +      applyWebTheme(s.theme);
 +    }
 +
++    if(typeof s.otaUrl === 'string'){
++      document.getElementById('otaUrl').value = s.otaUrl;
++    }
++    if(typeof s.nasUrl === 'string'){
++      document.getElementById('nasUrl').value = s.nasUrl;
++    }
++    if(typeof s.tempOffset1 === 'number') document.getElementById('calS1').value = s.tempOffset1;
++    if(typeof s.tempOffset2 === 'number') document.getElementById('calS2').value = s.tempOffset2;
++    if(typeof s.tempOffset3 === 'number') document.getElementById('calS3').value = s.tempOffset3;
++    if(typeof s.tempOffset4 === 'number') document.getElementById('calS4').value = s.tempOffset4;
++
 +  }catch(e){
 +    console.error("settings", e);
 +  }
@@ -4556,6 +5054,12 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +  const ntp  = document.getElementById('chkNtp').checked;
 +  const h24  = document.getElementById('chk24h').checked;
 +  const tz   = document.getElementById('selTz').value;
++  const ota  = document.getElementById('otaUrl').value;
++  const nas  = document.getElementById('nasUrl').value;
++  const cal1 = document.getElementById('calS1').value;
++  const cal2 = document.getElementById('calS2').value;
++  const cal3 = document.getElementById('calS3').value;
++  const cal4 = document.getElementById('calS4').value;
 +
 +  const body = new URLSearchParams();
 +  body.append('pumpMode', pm);
@@ -4575,6 +5079,12 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +  body.append('clockUseNtp', ntp ? '1' : '0');
 +  body.append('clockIs24h', h24 ? '1' : '0');
 +  body.append('clockTzIndex', tz);
++  body.append('otaUrl', ota);
++  body.append('nasUrl', nas);
++  body.append('tempOffset1', cal1);
++  body.append('tempOffset2', cal2);
++  body.append('tempOffset3', cal3);
++  body.append('tempOffset4', cal4);
 +
 +  try{
 +    await fetch('/api/settings', {method:'POST', body});
@@ -4582,6 +5092,74 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +    await fetchSettings();
 +  }catch(e){
 +    console.error("save settings", e);
++  }
++});
++
++document.getElementById('btnOtaNow').addEventListener('click', async ()=>{
++  try{
++    await fetch('/api/ota', {method:'POST'});
++    alert('Aggiornamento OTA avviato');
++  }catch(e){
++    console.error("ota", e);
++  }
++});
++
++document.getElementById('btnUploadOta').addEventListener('click', async ()=>{
++  const file = document.getElementById('otaFile').files[0];
++  const status = document.getElementById('otaUploadStatus');
++  if(!file){ status.textContent = "Seleziona un file"; return; }
++  const form = new FormData();
++  form.append('update', file);
++  status.textContent = "Caricamento...";
++  try{
++    const r = await fetch('/update', {method:'POST', body: form});
++    status.textContent = await r.text();
++  }catch(e){
++    status.textContent = "Errore upload";
++  }
++});
++
++// Wizard impianto
++const wizardModal = document.getElementById('wizardModal');
++const wizardBackdrop = document.getElementById('wizardBackdrop');
++document.getElementById('btnWizard').addEventListener('click', ()=>{
++  wizardModal.style.display = 'block';
++  wizardBackdrop.classList.add('show');
++});
++document.getElementById('btnWizardClose').addEventListener('click', ()=>{
++  wizardModal.style.display = 'none';
++  wizardBackdrop.classList.remove('show');
++});
++document.getElementById('btnWizardSave').addEventListener('click', async ()=>{
++  const body = new URLSearchParams();
++  body.append('pufferTechCount', document.getElementById('wPufferTech').value);
++  body.append('pufferSanCount', document.getElementById('wPufferSan').value);
++  body.append('pufferVolumeL', document.getElementById('wPufferVol').value);
++  body.append('radiators', document.getElementById('wRadiators').value);
++  body.append('thermostatType', document.getElementById('wThermostat').value);
++  body.append('boilerType', document.getElementById('wBoiler').value);
++  body.append('zoneValves', document.getElementById('wZoneValves').value);
++  body.append('zones', document.getElementById('wZones').value);
++  body.append('pumps', document.getElementById('wPumps').value);
++  body.append('thermocouples', document.getElementById('wThermocouples').value);
++  body.append('boilerKw', document.getElementById('wBoilerKw').value);
++  body.append('pelletKg', document.getElementById('wPelletKg').value);
++  body.append('pelletModel', document.getElementById('wPelletModel').value);
++  body.append('pelletRemote', document.getElementById('wPelletRemote').value);
++  body.append('woodVolume', document.getElementById('wWoodVol').value);
++  body.append('pufferMaxTemp', document.getElementById('wPufferMax').value);
++  body.append('openVessel', document.getElementById('wVessel').value);
++  body.append('houseArea', document.getElementById('wArea').value);
++  body.append('houseFloors', document.getElementById('wFloors').value);
++  try{
++    const r = await fetch('/api/config', {method:'POST', body});
++    const s = await r.json();
++    document.getElementById('wizardResult').textContent =
++      `Fabbisogno stimato: ${s.heatDemandKw} kW, consigliato: ${s.recommendedKw} kW. ${s.message}`;
++    wizardModal.style.display = 'none';
++    wizardBackdrop.classList.remove('show');
++  }catch(e){
++    console.error("wizard", e);
 +  }
 +});
 +
@@ -4764,7 +5342,14 @@ index 0000000000000000000000000000000000000000..26036f06fd8507ce8b63dbb6fc2f97f4
 +  server.on("/api/status",   handleApiStatus);
 +  server.on("/api/settings", HTTP_GET,  handleApiSettingsGet);
 +  server.on("/api/settings", HTTP_POST, handleApiSettingsPost);
++  server.on("/api/config",   HTTP_GET,  handleApiConfigGet);
++  server.on("/api/config",   HTTP_POST, handleApiConfigPost);
 +  server.on("/api/history",  handleApiHistory);
++  server.on("/api/ota",      HTTP_POST, handleApiOtaRequest);
++
++  server.on("/update", HTTP_POST,
++            []() { server.send(200, "text/plain", Update.hasError() ? "FAIL" : "OK"); ESP.restart(); },
++            handleOtaUpload);
 +
 +  server.on("/app", handleApp);
 +}
