@@ -1,9 +1,9 @@
 diff --git a/Build1.1Beta/TermoSystem v1.1Beta.ino b/Build1.1Beta/TermoSystem v1.1Beta.ino
 new file mode 100644
-index 0000000000000000000000000000000000000000..bd4f4dd6fd80a9d296617a77f2ecc8f4ea47943c
+index 0000000000000000000000000000000000000000..4f61daa6753cc625dc8d689d39a084c96383ced2
 --- /dev/null
 +++ b/Build1.1Beta/TermoSystem v1.1Beta.ino	
-@@ -0,0 +1,5349 @@
+@@ -0,0 +1,5353 @@
 +// =========================================================
 +//  TermoSystem - v1.2.3
 +//  BLOCCO 1: Config & Funzioni di base
@@ -20,6 +20,10 @@ index 0000000000000000000000000000000000000000..bd4f4dd6fd80a9d296617a77f2ecc8f4
 +#include <EEPROM.h>
 +#include <PubSubClient.h>
 +#include <Updater.h>
++
++#ifndef UPDATE_SIZE_UNKNOWN
++#define UPDATE_SIZE_UNKNOWN 0xFFFFFFFF
++#endif
 +#include <math.h>
 +#include <time.h>
 +#include <WiFiClientSecure.h>
